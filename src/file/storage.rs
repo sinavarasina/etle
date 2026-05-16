@@ -16,6 +16,10 @@ use crate::{
     },
 };
 
+pub const DEBUG_MANIFEST_FILE_NAME: &str = "manifest.bin";
+pub const DEBUG_CHUNKS_DIR_NAME: &str = "chunks";
+pub const DEBUG_CHUNK_EXTENSION: &str = "etle";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncryptedChunk {
     pub index: u32,
@@ -118,6 +122,73 @@ pub fn decrypt_to_file(
     let output = decrypt_to_bytes(encrypted, key)?;
     fs::write(output_path, output)?;
     Ok(())
+}
+
+pub fn write_debug_workspace(
+    encrypted: &EncryptedFile,
+    root: impl AsRef<Path>,
+) -> Result<(), FileError> {
+    let root = root.as_ref();
+    let chunks_dir = debug_chunks_dir(root);
+
+    fs::create_dir_all(&chunks_dir)?;
+    fs::write(debug_manifest_path(root), encrypted.manifest.to_bytes()?)?;
+
+    for meta in &encrypted.manifest.chunks {
+        let chunk = encrypted
+            .chunks
+            .get(&meta.index)
+            .ok_or(FileError::MissingChunk(meta.index))?;
+
+        fs::write(debug_chunk_path(root, meta.index), &chunk.data)?;
+    }
+
+    Ok(())
+}
+
+pub fn read_debug_workspace(root: impl AsRef<Path>) -> Result<EncryptedFile, FileError> {
+    let root = root.as_ref();
+    let manifest_bytes = fs::read(debug_manifest_path(root))?;
+    let manifest = Manifest::from_bytes(&manifest_bytes)?;
+    let mut chunks = BTreeMap::new();
+
+    for meta in &manifest.chunks {
+        let data = fs::read(debug_chunk_path(root, meta.index))?;
+        let actual = data.len() as u64;
+
+        if actual != meta.encrypted_size {
+            return Err(FileError::ChunkSizeMismatch {
+                index: meta.index,
+                expected: meta.encrypted_size,
+                actual,
+            });
+        }
+
+        chunks.insert(
+            meta.index,
+            EncryptedChunk {
+                index: meta.index,
+                data,
+            },
+        );
+    }
+
+    Ok(EncryptedFile { manifest, chunks })
+}
+
+#[must_use]
+pub fn debug_manifest_path(root: impl AsRef<Path>) -> PathBuf {
+    root.as_ref().join(DEBUG_MANIFEST_FILE_NAME)
+}
+
+#[must_use]
+pub fn debug_chunks_dir(root: impl AsRef<Path>) -> PathBuf {
+    root.as_ref().join(DEBUG_CHUNKS_DIR_NAME)
+}
+
+#[must_use]
+pub fn debug_chunk_path(root: impl AsRef<Path>, index: u32) -> PathBuf {
+    debug_chunks_dir(root).join(format!("{index:06}.{DEBUG_CHUNK_EXTENSION}"))
 }
 
 fn file_name(path: &Path) -> String {
