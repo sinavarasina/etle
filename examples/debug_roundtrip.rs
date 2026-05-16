@@ -6,21 +6,21 @@ use std::{
 use etle::{
     crypto::{
         hash::hash_file,
-        key_exchange::{derive_file_key, EphemeralKeypair},
+        key_exchange::{EphemeralKeypair, derive_file_key},
     },
     file::{
-        chunker::{read_file_chunks, DEFAULT_CHUNK_SIZE},
+        chunker::{DEFAULT_CHUNK_SIZE, read_file_chunks},
         storage::{
-            debug_chunk_path, debug_chunks_dir, debug_manifest_path, decrypt_to_bytes, encrypt_file,
-            read_debug_workspace, write_debug_workspace,
+            debug_chunk_path, debug_chunks_dir, debug_manifest_path, decrypt_to_bytes,
+            encrypt_file, read_debug_workspace, write_debug_workspace,
         },
     },
 };
 
 fn main() -> anyhow::Result<()> {
-    let input = std::env::args()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: cargo run --example debug_roundtrip -- <file> [workspace]"))?;
+    let input = std::env::args().nth(1).ok_or_else(|| {
+        anyhow::anyhow!("usage: cargo run --example debug_roundtrip -- <file> [workspace]")
+    })?;
     let input = PathBuf::from(input);
 
     let workspace = std::env::args()
@@ -43,7 +43,11 @@ fn main() -> anyhow::Result<()> {
     println!("chunk_size: {} bytes", DEFAULT_CHUNK_SIZE);
     println!("chunks: {}", plain_chunks.len());
     for chunk in plain_chunks.iter().take(5) {
-        println!("chunk {:06}: {} bytes plaintext", chunk.index, chunk.data.len());
+        println!(
+            "chunk {:06}: {} bytes plaintext",
+            chunk.index,
+            chunk.data.len()
+        );
     }
     if plain_chunks.len() > 5 {
         println!("... {} more chunk(s)", plain_chunks.len() - 5);
@@ -53,8 +57,13 @@ fn main() -> anyhow::Result<()> {
     println!("== step 3: encrypt ==");
     let seeder = EphemeralKeypair::generate();
     let peer = EphemeralKeypair::generate();
-    let seeder_key = derive_file_key(seeder.diffie_hellman(peer.public_key())?, file_id);
-    let peer_key = derive_file_key(peer.diffie_hellman(seeder.public_key())?, file_id);
+    let seeder_public_key = seeder.public_key();
+    let peer_public_key = peer.public_key();
+
+    let seeder_key = derive_file_key(seeder.diffie_hellman(peer_public_key)?, file_id);
+    let peer_key = derive_file_key(peer.diffie_hellman(seeder_public_key)?, file_id);
+
+    anyhow::ensure!(seeder_key == peer_key, "derived file keys do not match");
 
     let encrypted = encrypt_file(&input, &seeder_key, DEFAULT_CHUNK_SIZE)?;
     write_debug_workspace(&encrypted, &workspace)?;
@@ -62,7 +71,10 @@ fn main() -> anyhow::Result<()> {
     println!("chunks_dir: {}", debug_chunks_dir(&workspace).display());
 
     if let Some(first) = encrypted.chunks.get(&0) {
-        println!("first encrypted chunk: {}", debug_chunk_path(&workspace, 0).display());
+        println!(
+            "first encrypted chunk: {}",
+            debug_chunk_path(&workspace, 0).display()
+        );
         println!("first encrypted chunk size: {} bytes", first.data.len());
         println!("first encrypted bytes: {}", hex_prefix(&first.data, 16));
     }
