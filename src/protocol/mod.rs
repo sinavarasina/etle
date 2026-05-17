@@ -1,1 +1,3 @@
-//! Protocol layer placeholder for Sprint 2.
+pub mod message;
+
+pub use message::WireMessage;
