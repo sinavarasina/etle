@@ -40,3 +40,8 @@ required-features = ["cli"]
 name = "etle-gui"
 path = "src/bin/etle-gui.rs"
 required-features = ["gui-relm4"]
+
+[[bin]]
+name = "etled"
+path = "src/bin/etled.rs"
+required-features = ["cli"]
