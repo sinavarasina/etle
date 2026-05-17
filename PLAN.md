@@ -1,135 +1,293 @@
-# ETLE PLAN
+# ETLE PLAN — Torrent-like Track
+
+## Status Ringkas
+
+ETLE saat ini sudah melewati fondasi MVP single-peer:
+
+- [x] Sprint 1 — Crypto dan Chunking
+- [x] Sprint 2 — Protocol dan P2P TCP Transfer
+- [x] Sprint 3 — CLI Demo dan Progress Logging
+- [ ] Sprint 4 — Descriptor `.etle`, multi-file package, reusable encrypted chunks
+- [ ] Sprint 5 — Persistent library state, resume, dan auto-seed setelah download
+- [ ] Sprint 6 — Multi-peer dan parallel chunk download
+- [ ] Sprint 7 — App Service Abstraction
+- [ ] Sprint 8 — GUI
+
+Prioritas sekarang: **lebih torrent-like dulu**. GUI dan AppService tetap penting, tetapi ditunda sampai fungsionalitas torrent-like stabil.
+
+---
 
 ## 0. Scope
 
-- [ ] Membuat prototipe transfer file/pesan multimedia berbasis P2P
-- [ ] Menggunakan konsep torrent-like: seeder, peer, chunking, dan distribusi chunk
-- [ ] Fokus utama pada kriptografi: XChaCha20-Poly1305, BLAKE3, dan X25519
-- [ ] Tidak menargetkan kompatibilitas penuh dengan BitTorrent standar
-- [ ] Menyediakan CLI untuk testing dan demo
-- [ ] Menyediakan GUI untuk presentasi/demo visual
+- [x] Membuat prototipe transfer file/pesan multimedia berbasis P2P
+- [x] Menggunakan konsep torrent-like: seeder, peer, chunking, dan distribusi chunk
+- [x] Fokus utama pada kriptografi: XChaCha20-Poly1305, BLAKE3, dan X25519
+- [x] Tidak menargetkan kompatibilitas penuh dengan BitTorrent standar
+- [x] Menyediakan CLI untuk testing dan demo
+- [ ] Menyediakan format descriptor `.etle` sebagai metadata share, mirip fungsi `.torrent`
+- [ ] Mendukung satu share berisi satu file atau banyak file/folder
+- [ ] Mendukung encrypted chunks yang reusable antar peer
+- [ ] Mendukung state lokal untuk seed/download/resume
+- [ ] Mendukung multi-seeder dan parallel chunk download
+- [ ] Menyediakan GUI untuk presentasi/demo visual setelah swarm sederhana stabil
+
+Non-target saat ini:
+
+- [ ] Tidak mengejar BitTorrent compatibility
+- [ ] Tidak mengejar public DHT
+- [ ] Tidak mengejar NAT traversal penuh
+- [ ] Tidak mengejar tracker kompleks
+- [ ] Tidak mengejar anonymous routing
+- [ ] Tidak mengejar account system
 
 ---
 
 ## 1. Arsitektur Target
 
-- [ ] Core logic dipisahkan dari CLI dan GUI
-- [ ] `lib.rs` menjadi pusat library internal
-- [ ] CLI memakai core library yang sama dengan GUI
-- [ ] GUI hanya berinteraksi melalui `AppCommand` dan `AppEvent`
-- [ ] Transfer file berjalan asynchronous agar UI tidak freeze
+Target arsitektur akhir:
 
 ```text
-GUI / CLI
+CLI / GUI
    ↓
-App Service
+App Service                # belakangan, setelah torrent-like core stabil
+   ↓
+Swarm / Scheduler
    ↓
 P2P Network Layer
    ↓
 Protocol Message Layer
    ↓
-Chunk Storage
+Library State + Chunk Store
+   ↓
+Descriptor / Package Layer
    ↓
 Crypto Layer
 ```
 
+Untuk fase sekarang, CLI boleh tetap langsung memanggil network/state layer agar fungsionalitas selesai dulu:
+
+```text
+CLI
+ ↓
+Network / Swarm
+ ↓
+Library State
+ ↓
+Descriptor + Chunk Storage
+ ↓
+Crypto
+```
+
+AppService akan dibuat setelah alur torrent-like stabil, supaya GUI tidak ikut membawa desain yang masih berubah.
+
 ---
 
-## 2. Struktur Direktori
+## 2. Konsep Descriptor `.etle`
 
-- [ ] Membuat struktur project seperti berikut:
+ETLE membutuhkan metadata share yang setara dengan `.torrent`, tetapi custom dan tidak kompatibel dengan BitTorrent.
+
+Prinsip desain:
+
+- `descriptor.etle` adalah metadata publik yang boleh dibagikan.
+- `secret.etlekey` adalah rahasia lokal yang menyimpan file/share key.
+- Satu descriptor bisa mewakili satu file atau satu folder/multi-file package.
+- Semua file dalam satu package dipandang sebagai satu logical byte stream.
+- Logical stream dipecah menjadi chunk global.
+- Chunk terenkripsi harus reusable antar peer agar peer yang sudah download bisa ikut seed.
+
+Struktur descriptor target:
+
+```rust
+pub struct EtleDescriptor {
+    pub version: u16,
+    pub name: String,
+    pub share_id: ShareId,
+    pub total_size: u64,
+    pub chunk_size: u64,
+    pub crypto: CryptoSuite,
+    pub files: Vec<FileEntry>,
+    pub chunks: Vec<ChunkMeta>,
+}
+```
+
+```rust
+pub struct FileEntry {
+    pub path: String,
+    pub size: u64,
+    pub offset: u64,
+    pub blake3_hash: FileId,
+}
+```
+
+```rust
+pub struct ShareId(pub [u8; 32]);
+```
+
+`share_id` adalah identitas package/share, bukan hanya hash satu file. Untuk multi-file, `share_id` dihitung dari metadata package yang stabil, misalnya daftar path, size, file hash, chunk size, dan chunk hashes.
+
+---
+
+## 3. Library State Lokal
+
+State lokal memakai satu root `.etle/library/`, bukan memisahkan keras `seeds/` dan `downloads/`. Alasannya: satu share bisa berubah status dari downloading menjadi completed lalu seeding.
+
+Target layout:
+
+```text
+.etle/
+├── library/
+│   └── <share_id>/
+│       ├── descriptor.etle      # metadata publik
+│       ├── secret.etlekey       # file/share key lokal
+│       ├── chunks/
+│       │   ├── 000000.etle
+│       │   ├── 000001.etle
+│       │   └── ...
+│       ├── progress.bin         # bitmap/list chunk selesai
+│       ├── state.bin            # mode, output dir, peer info dasar
+│       └── output/
+│           └── ...              # hasil reconstruct untuk download multi-file
+│
+└── index.bin                    # daftar share lokal
+```
+
+Mode share:
+
+```rust
+pub enum ShareMode {
+    Seeding,
+    Downloading,
+    Completed,
+    Paused,
+}
+```
+
+State share:
+
+```rust
+pub struct ShareState {
+    pub share_id: ShareId,
+    pub mode: ShareMode,
+    pub descriptor_path: PathBuf,
+    pub chunks_dir: PathBuf,
+    pub output_dir: Option<PathBuf>,
+    pub completed_chunks: Vec<u32>,
+}
+```
+
+---
+
+## 4. Model Kripto Target
+
+Model sekarang masih session-derived file key:
+
+```text
+X25519 shared_secret + file_id → file_key → encrypt file khusus untuk koneksi itu
+```
+
+Model ini bekerja untuk single peer, tetapi tidak cocok untuk swarm karena ciphertext bisa berbeda untuk tiap peer.
+
+Target torrent-like:
+
+```text
+random file_key dibuat sekali per share
+file_key → encrypt chunks reusable
+X25519 shared_secret → session_key
+session_key → wrap/unwrap file_key saat peer authorized connect
+```
+
+Flow target:
+
+```text
+Seeder:
+1. create descriptor dari file/folder
+2. generate random file_key
+3. encrypt package menjadi reusable encrypted chunks
+4. simpan descriptor.etle, secret.etlekey, chunks
+5. saat peer connect:
+   - Hello
+   - X25519 key exchange
+   - derive session_key
+   - kirim descriptor/manifest
+   - kirim WrappedFileKey
+   - layani RequestChunk
+
+Peer:
+1. connect ke seeder
+2. Hello
+3. X25519 key exchange
+4. terima descriptor/manifest
+5. terima WrappedFileKey
+6. unwrap file_key
+7. request chunks
+8. verify BLAKE3 encrypted chunk
+9. simpan encrypted chunk ke library
+10. decrypt/reconstruct output
+11. setelah complete, bisa seed dari state yang sama
+```
+
+---
+
+## 5. Struktur Direktori Source Target
 
 ```text
 etle/
 ├── Cargo.toml
+├── PLAN.md
 ├── src/
 │   ├── lib.rs
-│   │
 │   ├── crypto/
 │   │   ├── mod.rs
 │   │   ├── aead.rs
 │   │   ├── hash.rs
-│   │   └── key_exchange.rs
-│   │
+│   │   ├── key_exchange.rs
+│   │   └── key_wrap.rs
 │   ├── file/
 │   │   ├── mod.rs
 │   │   ├── chunker.rs
-│   │   ├── manifest.rs
+│   │   ├── manifest.rs          # legacy/single-file manifest, bisa digabung bertahap
+│   │   ├── descriptor.rs        # EtleDescriptor, ShareId, FileEntry
+│   │   ├── package.rs           # multi-file logical stream
 │   │   └── storage.rs
-│   │
+│   ├── state/
+│   │   ├── mod.rs
+│   │   ├── library.rs
+│   │   ├── progress.rs
+│   │   └── error.rs
 │   ├── protocol/
 │   │   ├── mod.rs
 │   │   ├── message.rs
-│   │   └── codec.rs
-│   │
+│   │   ├── codec.rs
+│   │   └── error.rs
 │   ├── network/
 │   │   ├── mod.rs
-│   │   ├── peer.rs
-│   │   ├── seeder.rs
+│   │   ├── tcp.rs
+│   │   ├── handshake.rs
+│   │   ├── key_exchange.rs
+│   │   ├── transfer.rs
 │   │   └── swarm.rs
-│   │
 │   ├── app/
 │   │   ├── mod.rs
 │   │   ├── command.rs
 │   │   ├── event.rs
 │   │   └── service.rs
-│   │
 │   ├── gui/
-│   │   ├── mod.rs
-│   │   ├── model.rs
-│   │   ├── message.rs
-│   │   └── components.rs
-│   │
+│   │   └── mod.rs
 │   └── bin/
 │       ├── etle-cli.rs
 │       └── etle-gui.rs
-│
 ├── tests/
 │   ├── crypto_test.rs
 │   ├── chunk_test.rs
-│   ├── manifest_test.rs
+│   ├── descriptor_test.rs
+│   ├── state_test.rs
+│   ├── protocol_test.rs
+│   ├── network_test.rs
+│   ├── swarm_test.rs
 │   └── transfer_test.rs
-│
 └── examples/
     ├── local_roundtrip.rs
     └── debug_roundtrip.rs
-```
-
----
-
-## 3. Dependency Awal
-
-- [ ] Setup dependency async runtime
-  - Dependency: T00
-- [ ] Setup dependency serialization
-  - Dependency: T00
-- [ ] Setup dependency kriptografi
-  - Dependency: T00
-- [ ] Setup dependency CLI
-  - Dependency: T00
-- [ ] Setup dependency logging
-  - Dependency: T00
-- [ ] Setup dependency GUI sebagai optional feature
-  - Dependency: T00
-
-Target dependency:
-
-```toml
-[dependencies]
-anyhow = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-bincode = "1"
-blake3 = "1"
-chacha20poly1305 = "0.10"
-x25519-dalek = "2"
-rand_core = "0.6"
-clap = { version = "4", features = ["derive"], optional = true }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-relm4 = { version = "0.9", optional = true }
-gtk4 = { version = "0.9", optional = true }
 ```
 
 ---
@@ -145,14 +303,10 @@ gtk4 = { version = "0.9", optional = true }
 - [x] Menggunakan Rust edition terbaru yang stabil di environment tim
 - [x] Memastikan `cargo build` berhasil
 
-Dependency:
-
-- None
-
 Definition of Done:
 
 - [x] `cargo build` sukses
-- [x] `cargo test` sukses walau belum ada test
+- [x] `cargo test` sukses
 
 ---
 
@@ -166,10 +320,6 @@ Definition of Done:
 - [x] Membuat folder `app/`
 - [x] Membuat folder `gui/`
 - [x] Membuat folder `src/bin/`
-
-Dependency:
-
-- [x] T00
 
 Definition of Done:
 
@@ -186,15 +336,10 @@ Definition of Done:
 - [x] Membuat feature `gui-relm4`
 - [x] Membuat GUI dependency optional
 
-Dependency:
-
-- [x] T00
-- [x] T01
-
 Definition of Done:
 
 - [x] `cargo run --bin etle-cli -- --help` bisa dijalankan
-- [x] `cargo run --features gui-relm4 --bin etle-gui` bisa dibuild minimal
+- [x] GUI binary placeholder bisa dibuild minimal sesuai feature yang tersedia
 
 ---
 
@@ -207,11 +352,6 @@ Definition of Done:
 - [x] Membuat fungsi hash untuk chunk
 - [x] Membuat tipe `FileId`
 - [x] Membuat tipe `ChunkHash`
-
-Dependency:
-
-- [x] T01
-- [x] T02
 
 Definition of Done:
 
@@ -226,19 +366,13 @@ Definition of Done:
 - [x] Membuat fungsi encrypt chunk
 - [x] Membuat fungsi decrypt chunk
 - [x] Membuat generator nonce 24-byte
-- [x] Memastikan nonce berbeda untuk setiap chunk
 - [x] Memastikan authentication tag ikut dalam ciphertext
-
-Dependency:
-
-- [x] T01
-- [x] T02
 
 Definition of Done:
 
 - [x] Plaintext bisa dienkripsi dan didekripsi kembali
-- [x] Ciphertext yang diubah harus gagal decrypt
-- [x] Nonce salah harus gagal decrypt
+- [x] Ciphertext yang diubah gagal decrypt
+- [x] Nonce salah gagal decrypt
 
 ---
 
@@ -249,11 +383,6 @@ Definition of Done:
 - [x] Menghitung shared secret
 - [x] Memastikan dua peer menghasilkan shared secret yang sama
 
-Dependency:
-
-- [x] T01
-- [x] T02
-
 Definition of Done:
 
 - [x] Peer A dan Peer B menghasilkan shared secret identik
@@ -263,41 +392,29 @@ Definition of Done:
 
 ### T06 — Implement Key Derivation
 
-- [x] Membuat fungsi derivasi `file_key`
-- [x] Input derivasi memakai shared secret
-- [x] Input derivasi memakai `file_id`
+- [x] Membuat fungsi derivasi key dari shared secret dan file/share id
 - [x] Output derivasi berupa 32-byte key
-
-Dependency:
-
-- [x] T03
-- [x] T05
 
 Definition of Done:
 
-- [x] Shared secret dan file ID yang sama menghasilkan key yang sama
-- [x] File ID berbeda menghasilkan key berbeda
+- [x] Shared secret dan ID yang sama menghasilkan key yang sama
+- [x] ID berbeda menghasilkan key berbeda
 
 ---
 
 ### T07 — Implement AAD Format
 
 - [x] Membuat format AAD untuk AEAD
-- [x] AAD memuat `file_id`
+- [x] AAD memuat file/share id
 - [x] AAD memuat `chunk_index`
 - [x] AAD memuat `chunk_size`
 - [x] AAD dipakai saat encrypt dan decrypt
-
-Dependency:
-
-- [x] T04
-- [x] T06
 
 Definition of Done:
 
 - [x] Chunk dengan AAD benar berhasil decrypt
 - [x] Chunk dengan `chunk_index` salah gagal decrypt
-- [x] Chunk dengan `file_id` salah gagal decrypt
+- [x] Chunk dengan file/share id salah gagal decrypt
 
 ---
 
@@ -310,14 +427,6 @@ Definition of Done:
 - [x] Test wrong AAD
 - [x] Test X25519 shared secret
 - [x] Test key derivation
-
-Dependency:
-
-- [x] T03
-- [x] T04
-- [x] T05
-- [x] T06
-- [x] T07
 
 Definition of Done:
 
@@ -333,10 +442,6 @@ Definition of Done:
 - [x] Memecah file menjadi chunk
 - [x] Mendukung chunk size configurable
 - [x] Menjaga urutan chunk berdasarkan index
-
-Dependency:
-
-- [x] T01
 
 Definition of Done:
 
@@ -355,11 +460,6 @@ Definition of Done:
 - [x] Menyimpan `nonce`
 - [x] Menyimpan `blake3_hash`
 
-Dependency:
-
-- [x] T03
-- [x] T09
-
 Definition of Done:
 
 - [x] Metadata terbentuk untuk setiap chunk
@@ -376,10 +476,6 @@ Definition of Done:
 - [x] Menyimpan `chunk_size`
 - [x] Menyimpan list `ChunkMeta`
 
-Dependency:
-
-- [x] T10
-
 Definition of Done:
 
 - [x] Manifest bisa dibuat dari file input
@@ -393,11 +489,6 @@ Definition of Done:
 - [x] Deserialize manifest dari binary
 - [x] Menambahkan test roundtrip serialization
 
-Dependency:
-
-- [x] T02
-- [x] T11
-
 Definition of Done:
 
 - [x] Manifest sebelum serialize sama dengan manifest setelah deserialize
@@ -409,12 +500,7 @@ Definition of Done:
 - [x] Menyimpan encrypted chunk ke storage sementara
 - [x] Membaca encrypted chunk berdasarkan index
 - [x] Menyimpan nonce dan metadata di manifest
-- [x] Memastikan data plaintext tidak perlu disimpan setelah encrypt
-
-Dependency:
-
-- [x] T04
-- [x] T11
+- [x] Memastikan plaintext tidak perlu disimpan setelah encrypt
 
 Definition of Done:
 
@@ -433,15 +519,6 @@ Definition of Done:
 - [x] File disusun ulang
 - [x] Hash file hasil dibandingkan dengan hash file awal
 
-Dependency:
-
-- [x] T08
-- [x] T09
-- [x] T10
-- [x] T11
-- [x] T12
-- [x] T13
-
 Definition of Done:
 
 - [x] `BLAKE3(input_file) == BLAKE3(output_file)`
@@ -452,64 +529,52 @@ Definition of Done:
 
 ### T15 — Define Wire Message
 
-- [ ] Membuat enum `WireMessage`
-- [ ] Menambahkan message `Hello`
-- [ ] Menambahkan message `KeyExchange`
-- [ ] Menambahkan message `RequestManifest`
-- [ ] Menambahkan message `Manifest`
-- [ ] Menambahkan message `Have`
-- [ ] Menambahkan message `RequestChunk`
-- [ ] Menambahkan message `Chunk`
-- [ ] Menambahkan message `Error`
-
-Dependency:
-
-- [ ] T11
-- [ ] T12
+- [x] Membuat enum `WireMessage`
+- [x] Menambahkan message `Hello`
+- [x] Menambahkan message `KeyExchange`
+- [x] Menambahkan message `RequestManifest`
+- [x] Menambahkan message `Manifest`
+- [x] Menambahkan message `Have`
+- [x] Menambahkan message `RequestChunk`
+- [x] Menambahkan message `Chunk`
+- [x] Menambahkan message `Error`
 
 Definition of Done:
 
-- [ ] Semua message bisa di-serialize
-- [ ] Semua message bisa di-deserialize
+- [x] Semua message bisa di-serialize
+- [x] Semua message bisa di-deserialize
 
 ---
 
 ### T16 — Implement Protocol Codec
 
-- [ ] Membuat framing message
-- [ ] Menambahkan length-prefix encoding
-- [ ] Membuat fungsi send message
-- [ ] Membuat fungsi receive message
-- [ ] Menangani error decode
-
-Dependency:
-
-- [ ] T02
-- [ ] T15
+- [x] Membuat framing message
+- [x] Menambahkan length-prefix encoding
+- [x] Membuat fungsi send message
+- [x] Membuat fungsi receive message
+- [x] Menangani error decode
+- [x] Menolak frame kosong
+- [x] Menolak frame terlalu besar
+- [x] Menolak trailing bytes
 
 Definition of Done:
 
-- [ ] Message bisa dikirim lewat stream lokal
-- [ ] Message yang diterima sama dengan message yang dikirim
+- [x] Message bisa dikirim lewat stream lokal
+- [x] Message yang diterima sama dengan message yang dikirim
 
 ---
 
 ### T17 — Protocol Serialization Tests
 
-- [ ] Test `Hello`
-- [ ] Test `KeyExchange`
-- [ ] Test `Manifest`
-- [ ] Test `RequestChunk`
-- [ ] Test `Chunk`
-- [ ] Test invalid message handling
-
-Dependency:
-
-- [ ] T16
+- [x] Test wire message serialization roundtrip
+- [x] Test codec send/receive
+- [x] Test empty frame rejection
+- [x] Test oversized frame rejection
+- [x] Test invalid/trailing message handling
 
 Definition of Done:
 
-- [ ] Semua protocol test sukses
+- [x] Semua protocol test sukses
 
 ---
 
@@ -517,96 +582,68 @@ Definition of Done:
 
 ### T18 — Implement TCP Listener
 
-- [ ] Membuat seeder listener
-- [ ] Menerima koneksi peer
-- [ ] Spawn task untuk setiap koneksi
-- [ ] Logging koneksi masuk
-
-Dependency:
-
-- [ ] T16
+- [x] Membuat seeder listener
+- [x] Menerima koneksi peer
+- [x] Logging koneksi masuk via CLI/progress layer
 
 Definition of Done:
 
-- [ ] Seeder bisa listen di address tertentu
-- [ ] Seeder tidak block saat menerima peer baru
+- [x] Seeder bisa listen di address tertentu
 
 ---
 
 ### T19 — Implement TCP Client Connect
 
-- [ ] Membuat peer client
-- [ ] Connect ke seeder address
-- [ ] Mengirim message awal
-- [ ] Logging status koneksi
-
-Dependency:
-
-- [ ] T16
+- [x] Membuat peer client
+- [x] Connect ke seeder address
+- [x] Mengirim message awal
+- [x] Logging status koneksi via CLI/progress layer
 
 Definition of Done:
 
-- [ ] Peer bisa connect ke seeder lokal
+- [x] Peer bisa connect ke seeder lokal
 
 ---
 
 ### T20 — Implement Hello Handshake
 
-- [ ] Peer mengirim `Hello`
-- [ ] Seeder membalas `Hello`
-- [ ] Menyimpan `peer_id`
-- [ ] Menolak koneksi invalid
-
-Dependency:
-
-- [ ] T18
-- [ ] T19
+- [x] Peer mengirim `Hello`
+- [x] Seeder membalas `Hello`
+- [x] Menyimpan/menampilkan `peer_id`
+- [x] Menolak koneksi invalid
 
 Definition of Done:
 
-- [ ] Seeder dan peer saling mengetahui `peer_id`
+- [x] Seeder dan peer saling mengetahui `peer_id`
 
 ---
 
 ### T21 — Implement Network Key Exchange
 
-- [ ] Peer membuat ephemeral X25519 keypair
-- [ ] Seeder membuat ephemeral X25519 keypair
-- [ ] Keduanya bertukar public key via `KeyExchange`
-- [ ] Keduanya derive `file_key`
-
-Dependency:
-
-- [ ] T05
-- [ ] T06
-- [ ] T16
-- [ ] T20
+- [x] Peer membuat ephemeral X25519 keypair
+- [x] Seeder membuat ephemeral X25519 keypair
+- [x] Keduanya bertukar public key via `KeyExchange`
+- [x] Keduanya derive key yang sama untuk sesi single-peer saat ini
+- [ ] Refactor menjadi session key untuk wrapping file/share key
 
 Definition of Done:
 
-- [ ] Seeder dan peer memiliki file/session key yang sama
-- [ ] Key tidak dikirim langsung melalui network
+- [x] Seeder dan peer memiliki key yang sama
+- [x] Key tidak dikirim langsung melalui network
 
 ---
 
 ### T22 — Test Two Peer Connection
 
-- [ ] Jalankan seeder lokal
-- [ ] Jalankan peer lokal
-- [ ] Peer connect ke seeder
-- [ ] Hello handshake sukses
-- [ ] Key exchange sukses
-
-Dependency:
-
-- [ ] T18
-- [ ] T19
-- [ ] T20
-- [ ] T21
+- [x] Jalankan seeder lokal
+- [x] Jalankan peer lokal
+- [x] Peer connect ke seeder
+- [x] Hello handshake sukses
+- [x] Key exchange sukses
 
 Definition of Done:
 
-- [ ] Log menunjukkan koneksi dan key exchange berhasil
+- [x] Test koneksi dan key exchange berhasil
 
 ---
 
@@ -614,146 +651,102 @@ Definition of Done:
 
 ### T23 — Seeder Load File and Manifest
 
-- [ ] Seeder menerima path file
-- [ ] Seeder melakukan chunking
-- [ ] Seeder melakukan hashing
-- [ ] Seeder melakukan encryption
-- [ ] Seeder membuat manifest
-- [ ] Seeder siap melayani request manifest dan chunk
-
-Dependency:
-
-- [ ] T14
-- [ ] T18
+- [x] Seeder menerima path file
+- [x] Seeder melakukan chunking
+- [x] Seeder melakukan hashing
+- [x] Seeder melakukan encryption
+- [x] Seeder membuat manifest
+- [x] Seeder siap melayani request manifest dan chunk
 
 Definition of Done:
 
-- [ ] Seeder siap dengan encrypted chunks dan manifest
+- [x] Seeder siap dengan encrypted chunks dan manifest
 
 ---
 
-### T24 — Peer Request Manifest
+### T24 — Peer Request/Receive Manifest
 
-- [ ] Peer mengirim `RequestManifest`
-- [ ] Seeder mengirim `Manifest`
-- [ ] Peer menyimpan manifest
-- [ ] Peer menampilkan info file
-
-Dependency:
-
-- [ ] T17
-- [ ] T22
-- [ ] T23
+- [x] Peer menerima manifest dari seeder
+- [x] Peer menyimpan manifest selama transfer
+- [x] Peer menampilkan info file
 
 Definition of Done:
 
-- [ ] Peer menerima manifest dengan benar
+- [x] Peer menerima manifest dengan benar
 
 ---
 
 ### T25 — Peer Request Chunk
 
-- [ ] Peer membaca daftar chunk dari manifest
-- [ ] Peer mengirim `RequestChunk`
-- [ ] Peer meminta chunk berdasarkan index
-
-Dependency:
-
-- [ ] T24
+- [x] Peer membaca daftar chunk dari manifest
+- [x] Peer mengirim `RequestChunk`
+- [x] Peer meminta chunk berdasarkan index
 
 Definition of Done:
 
-- [ ] Seeder menerima request chunk yang valid
+- [x] Seeder menerima request chunk yang valid
 
 ---
 
 ### T26 — Seeder Send Encrypted Chunk
 
-- [ ] Seeder mencari encrypted chunk berdasarkan index
-- [ ] Seeder mengirim message `Chunk`
-- [ ] Seeder menangani request invalid
-
-Dependency:
-
-- [ ] T23
-- [ ] T25
+- [x] Seeder mencari encrypted chunk berdasarkan index
+- [x] Seeder mengirim message `Chunk`
+- [x] Seeder menangani request invalid
 
 Definition of Done:
 
-- [ ] Peer menerima encrypted chunk dari seeder
+- [x] Peer menerima encrypted chunk dari seeder
 
 ---
 
 ### T27 — Peer Verify BLAKE3
 
-- [ ] Peer menghitung hash chunk yang diterima
-- [ ] Peer membandingkan dengan hash di manifest
-- [ ] Peer menolak chunk yang hash-nya tidak cocok
-
-Dependency:
-
-- [ ] T03
-- [ ] T26
+- [x] Peer menghitung hash chunk yang diterima
+- [x] Peer membandingkan dengan hash di manifest
+- [x] Peer menolak chunk yang hash-nya tidak cocok
 
 Definition of Done:
 
-- [ ] Chunk valid diterima
-- [ ] Chunk rusak ditolak
+- [x] Chunk valid diterima
+- [x] Chunk rusak ditolak
 
 ---
 
 ### T28 — Peer Decrypt Chunk
 
-- [ ] Peer membuat AAD berdasarkan manifest
-- [ ] Peer decrypt chunk dengan XChaCha20-Poly1305
-- [ ] Peer menolak chunk jika AEAD tag invalid
-
-Dependency:
-
-- [ ] T04
-- [ ] T06
-- [ ] T07
-- [ ] T21
-- [ ] T27
+- [x] Peer membuat AAD berdasarkan manifest
+- [x] Peer decrypt chunk dengan XChaCha20-Poly1305
+- [x] Peer menolak chunk jika AEAD tag invalid
 
 Definition of Done:
 
-- [ ] Chunk valid bisa didekripsi
-- [ ] Chunk dengan AAD salah gagal decrypt
+- [x] Chunk valid bisa didekripsi
+- [x] Chunk dengan AAD salah gagal decrypt
 
 ---
 
 ### T29 — Peer Reconstruct Output File
 
-- [ ] Peer menyimpan plaintext chunk berdasarkan index
-- [ ] Peer menulis ulang file sesuai urutan chunk
-- [ ] Peer menangani chunk terakhir yang ukurannya lebih kecil
-
-Dependency:
-
-- [ ] T14
-- [ ] T28
+- [x] Peer menyimpan encrypted chunk berdasarkan index selama transfer
+- [x] Peer menulis ulang file sesuai urutan chunk
+- [x] Peer menangani chunk terakhir yang ukurannya lebih kecil
 
 Definition of Done:
 
-- [ ] File output berhasil dibuat
+- [x] File output berhasil dibuat
 
 ---
 
 ### T30 — Verify Final File Hash
 
-- [ ] Peer menghitung BLAKE3 file output
-- [ ] Peer membandingkan dengan `file_id`
-- [ ] Peer menandai transfer complete jika hash cocok
-
-Dependency:
-
-- [ ] T03
-- [ ] T29
+- [x] Peer menghitung BLAKE3 file output
+- [x] Peer membandingkan dengan `file_id`
+- [x] Peer menandai transfer complete jika hash cocok
 
 Definition of Done:
 
-- [ ] `BLAKE3(input_file) == BLAKE3(output_file)`
+- [x] `BLAKE3(input_file) == BLAKE3(output_file)`
 
 ---
 
@@ -761,358 +754,361 @@ Definition of Done:
 
 ### T31 — CLI Command `seed`
 
-- [ ] Menambahkan command `seed`
-- [ ] Parameter file path
-- [ ] Parameter listen address
-- [ ] Menjalankan seeder dari terminal
-
-Dependency:
-
-- [ ] T23
+- [x] Menambahkan command `seed`
+- [x] Parameter file path
+- [x] Parameter listen address
+- [x] Parameter chunk size
+- [x] Menjalankan seeder dari terminal
 
 Definition of Done:
 
-- [ ] `etle-cli seed ./sample.mp4 --listen 0.0.0.0:7000` berjalan
+- [x] `etle-cli seed ./sample.mp4 --listen 127.0.0.1:7000` berjalan
 
 ---
 
 ### T32 — CLI Command `connect`
 
-- [ ] Menambahkan command `connect`
-- [ ] Parameter peer address
-- [ ] Melakukan koneksi ke seeder
-- [ ] Melakukan handshake
-- [ ] Melakukan key exchange
-
-Dependency:
-
-- [ ] T22
+- [x] Menambahkan command `connect`
+- [x] Parameter peer address
+- [x] Melakukan koneksi ke seeder
+- [x] Melakukan hello handshake
 
 Definition of Done:
 
-- [ ] `etle-cli connect --peer 127.0.0.1:7000` berjalan
+- [x] `etle-cli connect --peer 127.0.0.1:7000` berjalan untuk probe handshake
 
 ---
 
 ### T33 — CLI Command `download`
 
-- [ ] Menambahkan command `download`
-- [ ] Parameter peer address
-- [ ] Parameter output path
-- [ ] Request manifest
-- [ ] Download semua chunk
-- [ ] Reconstruct file
-- [ ] Verify final hash
-
-Dependency:
-
-- [ ] T30
+- [x] Menambahkan command `download`
+- [x] Parameter peer address
+- [x] Parameter output path
+- [x] Receive manifest
+- [x] Download semua chunk
+- [x] Reconstruct file
+- [x] Verify final hash
 
 Definition of Done:
 
-- [ ] File bisa didownload dari seeder melalui CLI
+- [x] File bisa didownload dari seeder melalui CLI
 
 ---
 
 ### T34 — CLI Progress Logging
 
-- [ ] Menampilkan koneksi peer
-- [ ] Menampilkan status key exchange
-- [ ] Menampilkan progress chunk
-- [ ] Menampilkan status BLAKE3 verification
-- [ ] Menampilkan status AEAD decryption
-- [ ] Menampilkan status final hash
-
-Dependency:
-
-- [ ] T30
+- [x] Menampilkan koneksi peer
+- [x] Menampilkan status key exchange
+- [x] Menampilkan progress chunk
+- [x] Menampilkan status BLAKE3 verification
+- [x] Menampilkan status reconstruct/final hash
+- [x] Menambahkan `--verbose`
 
 Definition of Done:
 
-- [ ] Progress transfer terlihat jelas di terminal
+- [x] Progress transfer terlihat jelas di terminal
 
 ---
 
 ### T35 — CLI End-to-End Demo
 
-- [ ] Menjalankan seeder dari terminal pertama
-- [ ] Menjalankan peer dari terminal kedua
-- [ ] Peer mendownload file
-- [ ] File output sama dengan file input
-- [ ] Log menunjukkan crypto verification sukses
-
-Dependency:
-
-- [ ] T31
-- [ ] T32
-- [ ] T33
-- [ ] T34
+- [x] Menjalankan seeder dari terminal pertama
+- [x] Menjalankan peer dari terminal kedua
+- [x] Peer mendownload file
+- [x] File output sama dengan file input
+- [x] Log menunjukkan crypto verification sukses
 
 Definition of Done:
 
-- [ ] Demo CLI berhasil dari awal sampai akhir
+- [x] Demo CLI berhasil dari awal sampai akhir
 
 ---
 
-## Phase 7 — App Service Abstraction
+# Torrent-like Core
 
-### T36 — Define AppCommand
+## Phase 7 — Descriptor dan Multi-file Package
 
-- [ ] Membuat enum `AppCommand`
-- [ ] Menambahkan command `StartSeeder`
-- [ ] Menambahkan command `ConnectPeer`
-- [ ] Menambahkan command `DownloadFile`
-- [ ] Menambahkan command `StopTransfer`
+### T36 — Define ShareId
+
+- [ ] Membuat tipe `ShareId`
+- [ ] Implement `Display` hex
+- [ ] Implement serialize/deserialize
+- [ ] Menentukan cara menghitung `share_id` dari descriptor/package metadata
 
 Dependency:
 
-- [ ] T35
+- [x] T03
+- [x] T12
 
 Definition of Done:
 
-- [ ] Command cukup untuk CLI dan GUI
+- [ ] `ShareId` stabil untuk package yang sama
+- [ ] `ShareId` berbeda jika isi package berubah
 
 ---
 
-### T37 — Define AppEvent
+### T37 — Define EtleDescriptor
 
-- [ ] Membuat enum `AppEvent`
-- [ ] Menambahkan event `SeederStarted`
-- [ ] Menambahkan event `PeerConnected`
-- [ ] Menambahkan event `KeyExchangeCompleted`
-- [ ] Menambahkan event `ManifestReceived`
-- [ ] Menambahkan event `ChunkProgress`
-- [ ] Menambahkan event `TransferCompleted`
-- [ ] Menambahkan event `Error`
-
-Dependency:
-
-- [ ] T35
-
-Definition of Done:
-
-- [ ] Event cukup untuk CLI progress dan GUI update
-
----
-
-### T38 — Implement AppService
-
-- [ ] Membuat service yang menerima `AppCommand`
-- [ ] Membuat service yang mengirim `AppEvent`
-- [ ] Menjalankan network task secara async
-- [ ] Menyediakan channel command/event
+- [ ] Membuat `EtleDescriptor`
+- [ ] Menyimpan version
+- [ ] Menyimpan name
+- [ ] Menyimpan share_id
+- [ ] Menyimpan total_size
+- [ ] Menyimpan chunk_size
+- [ ] Menyimpan crypto suite
+- [ ] Menyimpan files
+- [ ] Menyimpan chunks
 
 Dependency:
 
 - [ ] T36
+- [x] T10
+
+Definition of Done:
+
+- [ ] Descriptor cukup untuk reconstruct file/folder
+- [ ] Descriptor tidak menyimpan file_key rahasia
+
+---
+
+### T38 — Define FileEntry dan Logical Stream
+
+- [ ] Membuat `FileEntry`
+- [ ] Menyimpan relative path
+- [ ] Menyimpan size
+- [ ] Menyimpan offset global
+- [ ] Menyimpan BLAKE3 hash per file
+- [ ] Membuat representasi logical byte stream untuk multi-file package
+
+Dependency:
+
 - [ ] T37
 
 Definition of Done:
 
-- [ ] Core transfer bisa dikontrol lewat AppService
+- [ ] Satu folder bisa dipetakan menjadi list file deterministic
+- [ ] Offset file valid dan tidak overlap
 
 ---
 
-### T39 — Refactor CLI to AppService
+### T39 — Descriptor Serialization
 
-- [ ] CLI tidak langsung memanggil network layer
-- [ ] CLI mengirim `AppCommand`
-- [ ] CLI menerima dan mencetak `AppEvent`
+- [ ] Serialize descriptor ke `descriptor.etle`
+- [ ] Deserialize descriptor dari `descriptor.etle`
+- [ ] Menolak descriptor versi tidak didukung
+- [ ] Test roundtrip descriptor
 
 Dependency:
 
+- [ ] T37
 - [ ] T38
 
 Definition of Done:
 
-- [ ] CLI tetap bekerja setelah refactor
+- [ ] Descriptor sebelum serialize sama dengan setelah deserialize
 
 ---
 
-### T40 — AppService Tests
+### T40 — Package Builder untuk File dan Folder
 
-- [ ] Test start seeder via AppCommand
-- [ ] Test connect peer via AppCommand
-- [ ] Test transfer progress via AppEvent
-- [ ] Test error propagation
+- [ ] Membuat builder dari single file
+- [ ] Membuat builder dari folder
+- [ ] Sort path secara deterministic
+- [ ] Mengabaikan file internal `.etle` jika input berupa folder
+- [ ] Menghasilkan descriptor awal dan plain chunk stream
 
 Dependency:
 
-- [ ] T39
+- [ ] T38
+- [x] T09
 
 Definition of Done:
 
-- [ ] AppService stabil dan bisa dipakai GUI
+- [ ] Single file dan folder bisa menjadi satu package descriptor
 
 ---
 
-## Phase 8 — GUI
+### T41 — Package Reconstruction
 
-### T41 — Setup GUI Binary
-
-- [ ] Membuat `src/bin/etle-gui.rs`
-- [ ] Menambahkan feature `gui-relm4`
-- [ ] Memastikan GUI binary bisa dibuild
+- [ ] Reconstruct single file dari logical stream
+- [ ] Reconstruct folder/multi-file dari logical stream
+- [ ] Membuat folder output otomatis
+- [ ] Verify hash per file setelah reconstruct
 
 Dependency:
 
 - [ ] T40
+- [x] T14
 
 Definition of Done:
 
-- [ ] `cargo run --features gui-relm4 --bin etle-gui` berjalan
+- [ ] Folder hasil reconstruct identik secara content dengan folder input
 
 ---
 
-### T42 — Main Window
+### T42 — Descriptor CLI Create Command
 
-- [ ] Membuat window utama
-- [ ] Membuat layout dasar
-- [ ] Menambahkan title aplikasi
+- [ ] Menambahkan `etle-cli create <INPUT> --output <NAME>.etle`
+- [ ] Mendukung input file
+- [ ] Mendukung input folder
+- [ ] Menampilkan share_id
+- [ ] Menampilkan jumlah file, total size, jumlah chunk
 
 Dependency:
 
-- [ ] T41
+- [ ] T39
+- [ ] T40
 
 Definition of Done:
 
-- [ ] Window kosong tampil
+- [ ] Descriptor `.etle` bisa dibuat dari CLI
 
 ---
 
-### T43 — File Picker UI
+### T43 — Descriptor Tests
 
-- [ ] Menambahkan tombol pilih file
-- [ ] Menampilkan path file terpilih
-- [ ] Validasi file path
+- [ ] Test single file descriptor
+- [ ] Test multi-file descriptor
+- [ ] Test deterministic file ordering
+- [ ] Test descriptor roundtrip
+- [ ] Test descriptor rejects invalid version/corrupt bytes
 
 Dependency:
 
-- [ ] T42
+- [ ] T39
+- [ ] T40
 
 Definition of Done:
 
-- [ ] User bisa memilih file dari GUI
+- [ ] Semua descriptor/package test sukses
 
 ---
 
-### T44 — Address Form UI
+## Phase 8 — Reusable File Key dan Key Wrapping
 
-- [ ] Input listen address
-- [ ] Input peer address
-- [ ] Validasi format address
+### T44 — Generate Reusable File Key
+
+- [ ] Membuat `generate_file_key() -> SymmetricKey`
+- [ ] File key random 32-byte
+- [ ] File key dibuat sekali per share/package
+- [ ] File key tidak masuk descriptor publik
 
 Dependency:
 
-- [ ] T42
+- [x] T04
 
 Definition of Done:
 
-- [ ] User bisa mengisi address seeder/peer
+- [ ] Dua panggilan generate menghasilkan key berbeda
 
 ---
 
-### T45 — Start Seeder Button
+### T45 — Define EtleSecret
 
-- [ ] Tombol start seeder
-- [ ] Mengirim `AppCommand::StartSeeder`
-- [ ] Menampilkan event `SeederStarted`
+- [ ] Membuat `EtleSecret`
+- [ ] Menyimpan share_id
+- [ ] Menyimpan file_key
+- [ ] Serialize ke `secret.etlekey`
+- [ ] Deserialize dari `secret.etlekey`
 
 Dependency:
 
-- [ ] T38
-- [ ] T43
+- [ ] T36
 - [ ] T44
 
 Definition of Done:
 
-- [ ] Seeder bisa dinyalakan dari GUI
+- [ ] Secret bisa disimpan dan dibaca ulang
+- [ ] Secret cocok dengan share_id descriptor
 
 ---
 
-### T46 — Connect Peer Button
+### T46 — Derive Session Key for Wrapping
 
-- [ ] Tombol connect peer
-- [ ] Mengirim `AppCommand::ConnectPeer`
-- [ ] Menampilkan event `PeerConnected`
-- [ ] Menampilkan event `KeyExchangeCompleted`
+- [ ] Refactor derivasi dari X25519 menjadi `session_key`
+- [ ] Context derivation berbeda dari file encryption key
+- [ ] Input memakai shared secret dan share_id
+- [ ] Output berupa `SymmetricKey`
 
 Dependency:
 
-- [ ] T38
-- [ ] T44
+- [x] T05
+- [ ] T36
 
 Definition of Done:
 
-- [ ] Peer bisa connect dari GUI
+- [ ] Seeder dan peer menghasilkan session_key yang sama
+- [ ] Share berbeda menghasilkan session_key berbeda
 
 ---
 
-### T47 — Transfer Progress UI
+### T47 — Implement Wrapped File Key
 
-- [ ] Menampilkan nama file
-- [ ] Menampilkan jumlah chunk selesai
-- [ ] Menampilkan progress bar
-- [ ] Update progress dari `AppEvent::ChunkProgress`
-
-Dependency:
-
-- [ ] T37
-- [ ] T38
-
-Definition of Done:
-
-- [ ] Progress transfer tampil real-time
-
----
-
-### T48 — Log Panel UI
-
-- [ ] Menampilkan event koneksi
-- [ ] Menampilkan event key exchange
-- [ ] Menampilkan event hash verification
-- [ ] Menampilkan event decrypt success/failure
-- [ ] Menampilkan error
+- [ ] Membuat struct `WrappedFileKey`
+- [ ] Menyimpan nonce
+- [ ] Menyimpan encrypted file_key bytes
+- [ ] Membuat `wrap_file_key(session_key, file_key, share_id)`
+- [ ] Membuat `unwrap_file_key(session_key, wrapped, share_id)`
+- [ ] AAD memakai share_id dan context key wrap
 
 Dependency:
 
-- [ ] T37
-- [ ] T38
-
-Definition of Done:
-
-- [ ] Log proses transfer terlihat di GUI
-
----
-
-### T49 — GUI Download Flow
-
-- [ ] GUI dapat connect ke seeder
-- [ ] GUI dapat request manifest
-- [ ] GUI dapat download chunk
-- [ ] GUI dapat menampilkan progress
-- [ ] GUI menampilkan transfer completed
-
-Dependency:
-
+- [x] T04
 - [ ] T45
 - [ ] T46
-- [ ] T47
-- [ ] T48
 
 Definition of Done:
 
-- [ ] File bisa didownload melalui GUI
+- [ ] File key bisa dibungkus dan dibuka kembali
+- [ ] Wrapped key gagal dibuka jika session_key/share_id salah
 
 ---
 
-### T50 — GUI Manual Integration Test
+### T48 — Protocol Message `WrappedFileKey`
 
-- [ ] Terminal/GUI pertama menjalankan seeder
-- [ ] GUI kedua connect sebagai peer
-- [ ] File berhasil dikirim
-- [ ] Progress terlihat
-- [ ] Hash akhir cocok
+- [ ] Menambahkan `WireMessage::WrappedFileKey`
+- [ ] Serialize/deserialize message baru
+- [ ] Menambahkan test protocol roundtrip
+
+Dependency:
+
+- [x] T15
+- [ ] T47
+
+Definition of Done:
+
+- [ ] Wrapped key bisa dikirim lewat protocol codec
+
+---
+
+### T49 — Refactor Transfer to Reusable Encrypted Chunks
+
+- [ ] Seeder encrypt package memakai file_key random, bukan session-derived key
+- [ ] Seeder mengirim descriptor/manifest
+- [ ] Seeder mengirim wrapped file_key setelah X25519
+- [ ] Peer unwrap file_key
+- [ ] Peer download encrypted chunks yang reusable
+- [ ] Peer decrypt/reconstruct dengan file_key
+
+Dependency:
+
+- [ ] T47
+- [ ] T48
+- [x] T30
+
+Definition of Done:
+
+- [ ] Single-peer transfer tetap berhasil
+- [ ] Ciphertext chunk tidak bergantung pada peer/session
+
+---
+
+### T50 — Reusable Ciphertext Tests
+
+- [ ] Test dua peer menerima chunk ciphertext yang sama untuk share yang sama
+- [ ] Test peer bisa decrypt dengan unwrapped file_key
+- [ ] Test wrapped key salah ditolak
+- [ ] Test final file hash tetap cocok
 
 Dependency:
 
@@ -1120,50 +1116,55 @@ Dependency:
 
 Definition of Done:
 
-- [ ] Demo GUI sukses
+- [ ] Semua test reusable file key sukses
 
 ---
 
-## Phase 9 — Multi-Peer / Swarm Sederhana
+## Phase 9 — Persistent Library State dan Resume
 
-### T51 — Peer Registry
+### T51 — Define Library Paths
 
-- [ ] Menyimpan daftar peer aktif
-- [ ] Menyimpan status koneksi peer
-- [ ] Menyimpan peer ID
+- [ ] Membuat layout `.etle/library/<share_id>/`
+- [ ] Membuat path helper untuk `descriptor.etle`
+- [ ] Membuat path helper untuk `secret.etlekey`
+- [ ] Membuat path helper untuk `chunks/`
+- [ ] Membuat path helper untuk `progress.bin`
+- [ ] Membuat path helper untuk `state.bin`
 
 Dependency:
 
-- [ ] T30
+- [ ] T36
 
 Definition of Done:
 
-- [ ] Daftar peer aktif bisa dilihat
+- [ ] Semua path state bisa dihasilkan secara deterministic
 
 ---
 
-### T52 — Implement Have Message
+### T52 — Define ShareState dan ShareMode
 
-- [ ] Peer mengirim daftar chunk yang dimiliki
-- [ ] Seeder menerima daftar chunk peer
-- [ ] Peer lain bisa mengetahui chunk availability
+- [ ] Membuat `ShareMode`
+- [ ] Membuat `ShareState`
+- [ ] Serialize/deserialize state
+- [ ] Menyimpan output_dir untuk download
+- [ ] Menyimpan completed chunks
 
 Dependency:
 
-- [ ] T15
 - [ ] T51
 
 Definition of Done:
 
-- [ ] Message `Have` berfungsi
+- [ ] State bisa disimpan dan dibaca ulang
 
 ---
 
-### T53 — Chunk Availability Map
+### T53 — Implement Progress Bitmap/List
 
-- [ ] Membuat map `chunk_index -> peer list`
-- [ ] Update map saat menerima `Have`
-- [ ] Memilih peer berdasarkan chunk yang tersedia
+- [ ] Membuat progress chunk tracking
+- [ ] Mark chunk complete setelah BLAKE3 verify
+- [ ] Load progress saat resume
+- [ ] Hitung missing chunks
 
 Dependency:
 
@@ -1171,31 +1172,54 @@ Dependency:
 
 Definition of Done:
 
-- [ ] Sistem tahu peer mana punya chunk tertentu
+- [ ] Progress tetap ada setelah proses dimatikan dan dijalankan ulang
 
 ---
 
-### T54 — Download Chunk from Multiple Peers
+### T54 — Persist Seed State
 
-- [ ] Request chunk berbeda dari peer berbeda
-- [ ] Menangani peer gagal
-- [ ] Fallback ke peer lain jika request gagal
+- [ ] `create` atau `seed` menyimpan descriptor
+- [ ] Menyimpan secret file key
+- [ ] Menyimpan encrypted chunks
+- [ ] Menandai mode `Seeding`
 
 Dependency:
 
-- [ ] T53
+- [ ] T45
+- [ ] T49
+- [ ] T52
 
 Definition of Done:
 
-- [ ] Peer bisa download chunk dari lebih dari satu sumber
+- [ ] Seeder bisa dimulai ulang dari library state tanpa re-encrypt input original
 
 ---
 
-### T55 — Partial Seeder Mode
+### T55 — Persist Download State
 
-- [ ] Peer yang sudah punya chunk dapat melayani request chunk
-- [ ] Peer mengirim `Have` setelah chunk berhasil diverifikasi
-- [ ] Peer lain bisa download dari peer parsial
+- [ ] Download menyimpan descriptor
+- [ ] Download menyimpan secret file key setelah unwrap
+- [ ] Download menyimpan encrypted chunk yang sudah verified
+- [ ] Download menyimpan progress
+- [ ] Download bisa resume missing chunks
+
+Dependency:
+
+- [ ] T52
+- [ ] T53
+- [ ] T49
+
+Definition of Done:
+
+- [ ] Download bisa dilanjutkan setelah dihentikan
+
+---
+
+### T56 — Seed From State
+
+- [ ] Menambahkan command `seed-state <SHARE_ID>` atau `seed <descriptor.etle> --from-library`
+- [ ] Seeder membaca descriptor, secret, dan chunks dari `.etle/library`
+- [ ] Seeder tidak membutuhkan file original jika chunks lengkap
 
 Dependency:
 
@@ -1203,17 +1227,53 @@ Dependency:
 
 Definition of Done:
 
-- [ ] Peer bisa menjadi seeder parsial
+- [ ] Share bisa di-seed hanya dari library state
 
 ---
 
-### T56 — Multi-Peer Demo
+### T57 — Auto-seed After Download
 
-- [ ] Menjalankan seeder utama
-- [ ] Menjalankan peer B
-- [ ] Menjalankan peer C
-- [ ] Peer C mengambil sebagian chunk dari seeder dan sebagian dari peer B
-- [ ] File akhir tetap valid
+- [ ] Setelah download complete, mode berubah menjadi `Completed` atau `Seeding`
+- [ ] Peer yang sudah selesai bisa melayani RequestChunk
+- [ ] CLI menyediakan opsi `--seed-after-download`
+
+Dependency:
+
+- [ ] T55
+- [ ] T56
+
+Definition of Done:
+
+- [ ] Peer hasil download bisa menjadi seeder untuk peer lain
+
+---
+
+### T58 — State Tests
+
+- [ ] Test seed state roundtrip
+- [ ] Test download progress save/load
+- [ ] Test resume missing chunk list
+- [ ] Test seed from completed download state
+
+Dependency:
+
+- [ ] T54
+- [ ] T55
+- [ ] T57
+
+Definition of Done:
+
+- [ ] Semua state tests sukses
+
+---
+
+## Phase 10 — Multi-peer Sequential dan Fallback
+
+### T59 — CLI Multiple Peers
+
+- [ ] `download` menerima banyak `--peer`
+- [ ] Validasi minimal satu peer
+- [ ] Menampilkan daftar peer target
 
 Dependency:
 
@@ -1221,13 +1281,488 @@ Dependency:
 
 Definition of Done:
 
+- [ ] CLI bisa menerima lebih dari satu peer address
+
+---
+
+### T60 — Peer Session Metadata
+
+- [ ] Menyimpan peer address
+- [ ] Menyimpan peer_id remote
+- [ ] Menyimpan connection status
+- [ ] Menyimpan chunk availability dasar
+
+Dependency:
+
+- [ ] T59
+
+Definition of Done:
+
+- [ ] Downloader mengetahui peer mana aktif
+
+---
+
+### T61 — Implement Have Query/Response
+
+- [ ] Peer mengirim `Have { chunks }`
+- [ ] Seeder/peer menjawab daftar chunk yang dimiliki
+- [ ] Partial seeder bisa mengirim chunk list sebagian
+
+Dependency:
+
+- [x] T15
+- [ ] T55
+
+Definition of Done:
+
+- [ ] Downloader tahu availability chunk per peer
+
+---
+
+### T62 — Chunk Availability Map
+
+- [ ] Membuat map `chunk_index -> peer list`
+- [ ] Update map dari message `Have`
+- [ ] Fallback jika peer tidak punya chunk
+
+Dependency:
+
+- [ ] T61
+
+Definition of Done:
+
+- [ ] Sistem tahu peer mana punya chunk tertentu
+
+---
+
+### T63 — Multi-peer Sequential Download
+
+- [ ] Download chunk dari peer berbeda secara sequential
+- [ ] Fallback ke peer lain jika request gagal
+- [ ] Simpan chunk ke state yang sama
+- [ ] Reconstruct jika semua chunk selesai
+
+Dependency:
+
+- [ ] T62
+- [ ] T55
+
+Definition of Done:
+
+- [ ] Satu download bisa memakai lebih dari satu sumber, walau belum parallel
+
+---
+
+## Phase 11 — Parallel Swarm Download
+
+### T64 — Chunk Job Queue
+
+- [ ] Membuat queue missing chunks
+- [ ] Menghindari duplicate download chunk yang sama
+- [ ] Mendukung retry
+- [ ] Mendukung failed peer backoff sederhana
+
+Dependency:
+
+- [ ] T63
+
+Definition of Done:
+
+- [ ] Missing chunks bisa dibagi ke worker
+
+---
+
+### T65 — Parallel Worker Pool
+
+- [ ] Menambahkan opsi `--parallel <N>`
+- [ ] Spawn worker async
+- [ ] Setiap worker memilih peer yang punya chunk
+- [ ] Worker request chunk dan verify BLAKE3
+
+Dependency:
+
+- [ ] T64
+
+Definition of Done:
+
+- [ ] Beberapa chunk bisa didownload bersamaan
+
+---
+
+### T66 — Safe Concurrent State Writes
+
+- [ ] Menulis chunk secara aman dari banyak worker
+- [ ] Update progress tanpa race logical
+- [ ] Hindari corrupt progress.bin
+- [ ] Flush state secara periodik
+
+Dependency:
+
+- [ ] T65
+
+Definition of Done:
+
+- [ ] Parallel download tidak merusak state lokal
+
+---
+
+### T67 — Partial Seeder Mode
+
+- [ ] Peer yang memiliki sebagian chunk bisa melayani chunk tersebut
+- [ ] Peer mengiklankan `Have`
+- [ ] Peer menolak chunk yang belum dimiliki
+
+Dependency:
+
+- [ ] T61
+- [ ] T66
+
+Definition of Done:
+
+- [ ] Peer parsial bisa menjadi sumber chunk untuk peer lain
+
+---
+
+### T68 — Multi-peer Parallel Download
+
+- [ ] Peer C mengambil chunk berbeda dari Seeder A dan Peer B
+- [ ] Download tetap valid jika salah satu peer mati
+- [ ] Verify final descriptor/file hashes
+
+Dependency:
+
+- [ ] T65
+- [ ] T67
+
+Definition of Done:
+
+- [ ] Download parallel dari banyak peer berhasil
+
+---
+
+### T69 — Swarm Progress Logging
+
+- [ ] Menampilkan progress global
+- [ ] Menampilkan peer source per chunk saat verbose
+- [ ] Menampilkan failed/retry peer saat verbose
+- [ ] Menampilkan completed chunks dan throughput sederhana
+
+Dependency:
+
+- [ ] T68
+
+Definition of Done:
+
+- [ ] User bisa memahami progress swarm tanpa log terlalu bising
+
+---
+
+### T70 — Multi-peer Demo
+
+- [ ] Menjalankan seeder utama
+- [ ] Menjalankan peer B yang download sebagian/selesai
+- [ ] Menjalankan peer C
+- [ ] Peer C mengambil sebagian chunk dari seeder dan sebagian dari peer B
+- [ ] File/folder akhir valid
+
+Dependency:
+
+- [ ] T68
+- [ ] T69
+
+Definition of Done:
+
 - [ ] Demo swarm sederhana berhasil
+
+---
+
+# App Service dan GUI, dikerjakan setelah cli stabil
+
+## Phase 12 — App Service Abstraction
+
+### T71 — Define AppCommand
+
+- [ ] Membuat enum `AppCommand`
+- [ ] Menambahkan command `CreateShare`
+- [ ] Menambahkan command `StartSeeder`
+- [ ] Menambahkan command `ConnectPeer`
+- [ ] Menambahkan command `DownloadShare`
+- [ ] Menambahkan command `ResumeShare`
+- [ ] Menambahkan command `StopTransfer`
+
+Dependency:
+
+- [ ] T70
+
+Definition of Done:
+
+- [ ] Command cukup untuk CLI dan GUI
+
+---
+
+### T72 — Define AppEvent
+
+- [ ] Membuat enum `AppEvent`
+- [ ] Menambahkan event `ShareCreated`
+- [ ] Menambahkan event `SeederStarted`
+- [ ] Menambahkan event `PeerConnected`
+- [ ] Menambahkan event `KeyExchangeCompleted`
+- [ ] Menambahkan event `DescriptorReceived`
+- [ ] Menambahkan event `ChunkProgress`
+- [ ] Menambahkan event `SwarmProgress`
+- [ ] Menambahkan event `TransferCompleted`
+- [ ] Menambahkan event `Error`
+
+Dependency:
+
+- [ ] T71
+
+Definition of Done:
+
+- [ ] Event cukup untuk CLI progress dan GUI update
+
+---
+
+### T73 — Implement AppService
+
+- [ ] Membuat service yang menerima `AppCommand`
+- [ ] Membuat service yang mengirim `AppEvent`
+- [ ] Menjalankan network/swarm task secara async
+- [ ] Menyediakan channel command/event
+
+Dependency:
+
+- [ ] T71
+- [ ] T72
+
+Definition of Done:
+
+- [ ] Core transfer bisa dikontrol lewat AppService
+
+---
+
+### T74 — Refactor CLI to AppService
+
+- [ ] CLI tidak langsung memanggil network layer
+- [ ] CLI mengirim `AppCommand`
+- [ ] CLI menerima dan mencetak `AppEvent`
+
+Dependency:
+
+- [ ] T73
+
+Definition of Done:
+
+- [ ] CLI tetap bekerja setelah refactor
+
+---
+
+### T75 — AppService Tests
+
+- [ ] Test create share via AppCommand
+- [ ] Test start seeder via AppCommand
+- [ ] Test connect/download via AppCommand
+- [ ] Test transfer progress via AppEvent
+- [ ] Test error propagation
+
+Dependency:
+
+- [ ] T74
+
+Definition of Done:
+
+- [ ] AppService stabil dan bisa dipakai GUI
+
+---
+
+## Phase 13 — GUI
+
+### T76 — Setup GUI Binary
+
+- [ ] Membuat `src/bin/etle-gui.rs`
+- [ ] Menambahkan feature `gui-relm4`
+- [ ] Memastikan GUI binary bisa dibuild
+
+Dependency:
+
+- [ ] T75
+
+Definition of Done:
+
+- [ ] `cargo run --features gui-relm4 --bin etle-gui` berjalan
+
+---
+
+### T77 — Main Window
+
+- [ ] Membuat window utama
+- [ ] Membuat layout dasar
+- [ ] Menambahkan title aplikasi
+
+Dependency:
+
+- [ ] T76
+
+Definition of Done:
+
+- [ ] Window kosong tampil
+
+---
+
+### T78 — Share Creator UI
+
+- [ ] File/folder picker
+- [ ] Input output descriptor `.etle`
+- [ ] Tombol create share
+- [ ] Menampilkan share_id
+
+Dependency:
+
+- [ ] T77
+- [ ] T71
+
+Definition of Done:
+
+- [ ] User bisa membuat descriptor dari GUI
+
+---
+
+### T79 — Address Form UI
+
+- [ ] Input listen address
+- [ ] Input peer address list
+- [ ] Input parallel worker count
+- [ ] Validasi format address
+
+Dependency:
+
+- [ ] T77
+
+Definition of Done:
+
+- [ ] User bisa mengisi address seeder/peer
+
+---
+
+### T80 — Start Seeder Button
+
+- [ ] Tombol start seeder
+- [ ] Mengirim `AppCommand::StartSeeder`
+- [ ] Menampilkan event `SeederStarted`
+
+Dependency:
+
+- [ ] T73
+- [ ] T78
+- [ ] T79
+
+Definition of Done:
+
+- [ ] Seeder bisa dinyalakan dari GUI
+
+---
+
+### T81 — Download UI
+
+- [ ] Pilih descriptor `.etle`
+- [ ] Input output folder
+- [ ] Input peer list
+- [ ] Tombol download/resume
+- [ ] Mengirim `AppCommand::DownloadShare`
+
+Dependency:
+
+- [ ] T73
+- [ ] T78
+- [ ] T79
+
+Definition of Done:
+
+- [ ] Download bisa dimulai dari GUI
+
+---
+
+### T82 — Transfer Progress UI
+
+- [ ] Menampilkan nama share
+- [ ] Menampilkan jumlah file
+- [ ] Menampilkan jumlah chunk selesai
+- [ ] Menampilkan progress bar
+- [ ] Update progress dari `AppEvent::ChunkProgress` dan `SwarmProgress`
+
+Dependency:
+
+- [ ] T72
+- [ ] T73
+
+Definition of Done:
+
+- [ ] Progress transfer tampil real-time
+
+---
+
+### T83 — Log Panel UI
+
+- [ ] Menampilkan event koneksi
+- [ ] Menampilkan event key exchange
+- [ ] Menampilkan event descriptor/key wrap
+- [ ] Menampilkan event hash verification
+- [ ] Menampilkan error
+
+Dependency:
+
+- [ ] T72
+- [ ] T73
+
+Definition of Done:
+
+- [ ] Log proses transfer terlihat di GUI
+
+---
+
+### T84 — GUI Swarm Flow
+
+- [ ] GUI dapat create descriptor
+- [ ] GUI dapat start seeder
+- [ ] GUI dapat download dari banyak peer
+- [ ] GUI dapat menampilkan progress
+- [ ] GUI menampilkan transfer completed
+
+Dependency:
+
+- [ ] T80
+- [ ] T81
+- [ ] T82
+- [ ] T83
+
+Definition of Done:
+
+- [ ] File/folder bisa didownload melalui GUI
+
+---
+
+### T85 — GUI Manual Integration Test
+
+- [ ] Terminal/GUI pertama menjalankan seeder
+- [ ] Peer B download dan seed
+- [ ] GUI kedua download dari lebih dari satu peer
+- [ ] File/folder berhasil dikirim
+- [ ] Progress terlihat
+- [ ] Hash akhir cocok
+
+Dependency:
+
+- [ ] T84
+
+Definition of Done:
+
+- [ ] Demo GUI sukses
 
 ---
 
 # Priority
 
-## Wajib untuk MVP
+## Selesai
 
 - [x] T00 — Inisialisasi Project Rust
 - [x] T01 — Setup Module Structure
@@ -1244,54 +1779,86 @@ Definition of Done:
 - [x] T12 — Manifest Serialization
 - [x] T13 — Implement Encrypted Chunk Storage
 - [x] T14 — Local Reconstruct Test
-- [ ] T15 — Define Wire Message
-- [ ] T16 — Implement Protocol Codec
-- [ ] T17 — Protocol Serialization Tests
-- [ ] T18 — Implement TCP Listener
-- [ ] T19 — Implement TCP Client Connect
-- [ ] T20 — Implement Hello Handshake
-- [ ] T21 — Implement Network Key Exchange
-- [ ] T22 — Test Two Peer Connection
-- [ ] T23 — Seeder Load File and Manifest
-- [ ] T24 — Peer Request Manifest
-- [ ] T25 — Peer Request Chunk
-- [ ] T26 — Seeder Send Encrypted Chunk
-- [ ] T27 — Peer Verify BLAKE3
-- [ ] T28 — Peer Decrypt Chunk
-- [ ] T29 — Peer Reconstruct Output File
-- [ ] T30 — Verify Final File Hash
-- [ ] T31 — CLI Command `seed`
-- [ ] T32 — CLI Command `connect`
-- [ ] T33 — CLI Command `download`
-- [ ] T34 — CLI Progress Logging
-- [ ] T35 — CLI End-to-End Demo
+- [x] T15 — Define Wire Message
+- [x] T16 — Implement Protocol Codec
+- [x] T17 — Protocol Serialization Tests
+- [x] T18 — Implement TCP Listener
+- [x] T19 — Implement TCP Client Connect
+- [x] T20 — Implement Hello Handshake
+- [x] T21 — Implement Network Key Exchange baseline
+- [x] T22 — Test Two Peer Connection
+- [x] T23 — Seeder Load File and Manifest
+- [x] T24 — Peer Request/Receive Manifest
+- [x] T25 — Peer Request Chunk
+- [x] T26 — Seeder Send Encrypted Chunk
+- [x] T27 — Peer Verify BLAKE3
+- [x] T28 — Peer Decrypt Chunk
+- [x] T29 — Peer Reconstruct Output File
+- [x] T30 — Verify Final File Hash
+- [x] T31 — CLI Command `seed`
+- [x] T32 — CLI Command `connect`
+- [x] T33 — CLI Command `download`
+- [x] T34 — CLI Progress Logging
+- [x] T35 — CLI End-to-End Demo
 
-## Wajib untuk GUI
+## Wajib Berikutnya — Torrent-like MVP
 
-- [ ] T36 — Define AppCommand
-- [ ] T37 — Define AppEvent
-- [ ] T38 — Implement AppService
-- [ ] T39 — Refactor CLI to AppService
-- [ ] T40 — AppService Tests
-- [ ] T41 — Setup GUI Binary
-- [ ] T42 — Main Window
-- [ ] T43 — File Picker UI
-- [ ] T44 — Address Form UI
-- [ ] T45 — Start Seeder Button
-- [ ] T46 — Connect Peer Button
-- [ ] T47 — Transfer Progress UI
-- [ ] T48 — Log Panel UI
-- [ ] T49 — GUI Download Flow
-- [ ] T50 — GUI Manual Integration Test
+- [ ] T36 — Define ShareId
+- [ ] T37 — Define EtleDescriptor
+- [ ] T38 — Define FileEntry dan Logical Stream
+- [ ] T39 — Descriptor Serialization
+- [ ] T40 — Package Builder untuk File dan Folder
+- [ ] T41 — Package Reconstruction
+- [ ] T42 — Descriptor CLI Create Command
+- [ ] T43 — Descriptor Tests
+- [ ] T44 — Generate Reusable File Key
+- [ ] T45 — Define EtleSecret
+- [ ] T46 — Derive Session Key for Wrapping
+- [ ] T47 — Implement Wrapped File Key
+- [ ] T48 — Protocol Message `WrappedFileKey`
+- [ ] T49 — Refactor Transfer to Reusable Encrypted Chunks
+- [ ] T50 — Reusable Ciphertext Tests
+- [ ] T51 — Define Library Paths
+- [ ] T52 — Define ShareState dan ShareMode
+- [ ] T53 — Implement Progress Bitmap/List
+- [ ] T54 — Persist Seed State
+- [ ] T55 — Persist Download State
+- [ ] T56 — Seed From State
+- [ ] T57 — Auto-seed After Download
+- [ ] T58 — State Tests
 
-## Opsional / Enhancement
+## Wajib untuk Swarm Sederhana
 
-- [ ] T51 — Peer Registry
-- [ ] T52 — Implement Have Message
-- [ ] T53 — Chunk Availability Map
-- [ ] T54 — Download Chunk from Multiple Peers
-- [ ] T55 — Partial Seeder Mode
-- [ ] T56 — Multi-Peer Demo
+- [ ] T59 — CLI Multiple Peers
+- [ ] T60 — Peer Session Metadata
+- [ ] T61 — Implement Have Query/Response
+- [ ] T62 — Chunk Availability Map
+- [ ] T63 — Multi-peer Sequential Download
+- [ ] T64 — Chunk Job Queue
+- [ ] T65 — Parallel Worker Pool
+- [ ] T66 — Safe Concurrent State Writes
+- [ ] T67 — Partial Seeder Mode
+- [ ] T68 — Multi-peer Parallel Download
+- [ ] T69 — Swarm Progress Logging
+- [ ] T70 — Multi-peer Demo
+
+## Setelah cli Stabil
+
+- [ ] T71 — Define AppCommand
+- [ ] T72 — Define AppEvent
+- [ ] T73 — Implement AppService
+- [ ] T74 — Refactor CLI to AppService
+- [ ] T75 — AppService Tests
+- [ ] T76 — Setup GUI Binary
+- [ ] T77 — Main Window
+- [ ] T78 — Share Creator UI
+- [ ] T79 — Address Form UI
+- [ ] T80 — Start Seeder Button
+- [ ] T81 — Download UI
+- [ ] T82 — Transfer Progress UI
+- [ ] T83 — Log Panel UI
+- [ ] T84 — GUI Swarm Flow
+- [ ] T85 — GUI Manual Integration Test
 
 ---
 
@@ -1299,7 +1866,7 @@ Definition of Done:
 
 ## Sprint 1 — Crypto dan Chunking
 
-Status: complete. Sprint 2 dapat dimulai setelah `cargo test` dan `debug_roundtrip` berhasil.
+Status: complete.
 
 - [x] T00
 - [x] T01
@@ -1325,44 +1892,48 @@ Goal:
 
 ## Sprint 2 — Protocol dan P2P
 
-- [ ] T15
-- [ ] T16
-- [ ] T17
-- [ ] T18
-- [ ] T19
-- [ ] T20
-- [ ] T21
-- [ ] T22
-- [ ] T23
-- [ ] T24
-- [ ] T25
-- [ ] T26
-- [ ] T27
-- [ ] T28
-- [ ] T29
-- [ ] T30
+Status: complete.
+
+- [x] T15
+- [x] T16
+- [x] T17
+- [x] T18
+- [x] T19
+- [x] T20
+- [x] T21 baseline
+- [x] T22
+- [x] T23
+- [x] T24
+- [x] T25
+- [x] T26
+- [x] T27
+- [x] T28
+- [x] T29
+- [x] T30
 
 Goal:
 
-- [ ] Seeder dan peer bisa transfer encrypted chunks melalui TCP
+- [x] Seeder dan peer bisa transfer encrypted chunks melalui TCP
 
 ---
 
 ## Sprint 3 — CLI Demo
 
-- [ ] T31
-- [ ] T32
-- [ ] T33
-- [ ] T34
-- [ ] T35
+Status: complete.
+
+- [x] T31
+- [x] T32
+- [x] T33
+- [x] T34
+- [x] T35
 
 Goal:
 
-- [ ] Demo terminal end-to-end berhasil
+- [x] Demo terminal end-to-end berhasil
 
 ---
 
-## Sprint 4 — GUI
+## Sprint 4 — Descriptor, Package, dan Reusable Key
 
 - [ ] T36
 - [ ] T37
@@ -1382,11 +1953,14 @@ Goal:
 
 Goal:
 
-- [ ] GUI bisa memilih file, start seeder, connect peer, transfer file, menampilkan progress, dan menampilkan log kriptografi
+- [ ] ETLE punya `descriptor.etle` sebagai metadata share seperti `.torrent`
+- [ ] Satu share bisa berisi file atau folder
+- [ ] Encrypted chunks reusable antar peer
+- [ ] X25519 dipakai untuk wrapping file_key, bukan membuat ciphertext per peer
 
 ---
 
-## Sprint 5 — Swarm Sederhana
+## Sprint 5 — Persistent Library State dan Auto Seed
 
 - [ ] T51
 - [ ] T52
@@ -1394,74 +1968,151 @@ Goal:
 - [ ] T54
 - [ ] T55
 - [ ] T56
+- [ ] T57
+- [ ] T58
 
 Goal:
 
-- [ ] Peer dapat mengambil chunk dari lebih dari satu peer
+- [ ] Seed/download state tersimpan di `.etle/library/<share_id>`
+- [ ] Download bisa resume
+- [ ] Peer yang selesai download bisa menjadi seeder
 
 ---
 
-# Definition of Done MVP
+## Sprint 6 — Multi-peer dan Parallel Swarm
 
-- [ ] CLI bisa menjalankan seeder
-- [ ] CLI bisa menjalankan peer
-- [ ] Peer bisa connect ke seeder
-- [ ] Key exchange berhasil
-- [ ] Manifest diterima peer
-- [ ] File dikirim sebagai encrypted chunks
+- [ ] T59
+- [ ] T60
+- [ ] T61
+- [ ] T62
+- [ ] T63
+- [ ] T64
+- [ ] T65
+- [ ] T66
+- [ ] T67
+- [ ] T68
+- [ ] T69
+- [ ] T70
+
+Goal:
+
+- [ ] Peer bisa mengambil chunk dari lebih dari satu peer
+- [ ] Download chunk bisa parallel
+- [ ] Partial seeder bekerja
+
+---
+
+## Sprint 7 — App Service Abstraction
+
+- [ ] T71
+- [ ] T72
+- [ ] T73
+- [ ] T74
+- [ ] T75
+
+Goal:
+
+- [ ] CLI dan GUI bisa memakai satu AppService yang sama
+
+---
+
+## Sprint 8 — GUI
+
+- [ ] T76
+- [ ] T77
+- [ ] T78
+- [ ] T79
+- [ ] T80
+- [ ] T81
+- [ ] T82
+- [ ] T83
+- [ ] T84
+- [ ] T85
+
+Goal:
+
+- [ ] GUI bisa create share, start seeder, download dari peer, menampilkan progress, dan log kriptografi/swarm
+
+---
+
+# Definition of Done Torrent-like MVP
+
+- [ ] CLI bisa membuat descriptor `.etle` dari file
+- [ ] CLI bisa membuat descriptor `.etle` dari folder
+- [ ] Descriptor tidak menyimpan file_key rahasia
+- [ ] Secret key tersimpan terpisah sebagai `secret.etlekey`
+- [ ] Encrypted chunks tersimpan di `.etle/library/<share_id>/chunks/`
+- [ ] Seeder bisa melayani peer dari library state
+- [ ] Peer bisa receive descriptor/manifest
+- [ ] X25519 key exchange berhasil
+- [ ] File key dikirim sebagai wrapped key, bukan plaintext
+- [ ] Peer bisa unwrap file key
 - [ ] Setiap chunk diverifikasi dengan BLAKE3
-- [ ] Setiap chunk didekripsi dengan XChaCha20-Poly1305
-- [ ] File berhasil direkonstruksi
-- [ ] Hash file output sama dengan hash file input
+- [ ] File/folder bisa direkonstruksi
+- [ ] Download state bisa resume
+- [ ] Peer yang selesai download bisa seed ulang
+- [ ] Peer bisa download dari lebih dari satu peer
+- [ ] Parallel chunk download berjalan
+- [ ] Final hash per file cocok
 
-Command target:
+Command target awal Sprint 4/5:
 
 ```bash
-cargo run --bin etle-cli -- seed ./sample.mp4 --listen 0.0.0.0:7000
+cargo run --bin etle-cli -- create ./sample-folder --output sample.etle
 ```
 
 ```bash
-cargo run --bin etle-cli -- download --peer 127.0.0.1:7000 --output ./received.mp4
+cargo run --bin etle-cli -- seed sample.etle --listen 127.0.0.1:7000
+```
+
+```bash
+cargo run --bin etle-cli -- download sample.etle --peer 127.0.0.1:7000 --output ./received-folder
+```
+
+Command target Sprint 6:
+
+```bash
+cargo run --bin etle-cli -- download sample.etle \
+  --peer 127.0.0.1:7000 \
+  --peer 127.0.0.1:7001 \
+  --parallel 4 \
+  --output ./received-folder
 ```
 
 Expected output:
 
 ```text
-[+] connected to peer
+[+] descriptor loaded
+[+] connected to peer 127.0.0.1:7000
 [+] key exchange completed
-[+] manifest received
-[+] chunk 0 received
+[+] wrapped file key received
+[+] file key unwrapped
+[+] have map received
+[+] chunk 0 received from 127.0.0.1:7000
 [+] BLAKE3 verification OK
-[+] AEAD decryption OK
-[+] file reconstructed
-[+] final file hash matched
+[+] progress saved
+[+] file/folder reconstructed
+[+] final hashes matched
+[+] share is now seedable
 ```
-
----
-
-# Non-Goals
-
-- [ ] Tidak mengejar BitTorrent compatibility
-- [ ] Tidak mengejar public DHT
-- [ ] Tidak mengejar NAT traversal penuh
-- [ ] Tidak mengejar tracker kompleks
-- [ ] Tidak mengejar account system
-- [ ] Tidak mengejar anonymous routing
-- [ ] Tidak mengejar mobile app production-ready
-- [ ] Tidak mengejar chat bubble UI kompleks sebelum transfer file stabil
 
 ---
 
 # Final Target
 
 - [ ] Rust core library selesai
-- [ ] CLI demo selesai
-- [ ] GUI demo selesai
+- [ ] CLI torrent-like demo selesai
+- [ ] Descriptor `.etle` bekerja
+- [ ] Multi-file package bekerja
+- [ ] Persistent library state bekerja
+- [ ] Resume download bekerja
+- [ ] Auto-seed after download bekerja
+- [ ] Multi-peer sequential download bekerja
+- [ ] Parallel chunk download bekerja
+- [ ] Partial seeder bekerja
+- [ ] GUI demo selesai setelah core swarm stabil
 - [ ] Secure P2P transfer bekerja
-- [ ] Seeder dan peer bekerja
-- [ ] Chunking bekerja
 - [ ] X25519 key exchange bekerja
-- [ ] XChaCha20-Poly1305 per chunk bekerja
-- [ ] BLAKE3 per chunk/file bekerja
-- [ ] Manifest custom bekerja
-- [ ] File output identik dengan file input
+- [ ] XChaCha20-Poly1305 per chunk/key-wrap bekerja
+- [ ] BLAKE3 per chunk/file/share bekerja
+- [ ] File/folder output identik dengan input
