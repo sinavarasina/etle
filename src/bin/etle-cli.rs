@@ -8,8 +8,9 @@ use clap::{Parser, Subcommand};
 use etle::{
     file::chunker::DEFAULT_CHUNK_SIZE,
     network::{
-        bind_listener, client_hello_handshake, connect_peer, download_file_from_peer,
-        serve_file_to_one_peer,
+        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
+        client_hello_handshake, connect_peer, download_file_from_peer_with_options,
+        serve_file_to_one_peer_with_options,
     },
 };
 
@@ -21,6 +22,10 @@ use etle::{
     about = "Experimental torrent-like encrypted file transfer"
 )]
 struct Cli {
+    /// Show detailed transfer logs.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -77,6 +82,11 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let log_level = if cli.verbose {
+        TransferLogLevel::Verbose
+    } else {
+        TransferLogLevel::Normal
+    };
 
     match cli.command {
         Command::Seed {
@@ -91,7 +101,13 @@ async fn main() -> anyhow::Result<()> {
             println!("[seeder] waiting for one peer...");
 
             let listener = bind_listener(listen).await?;
-            serve_file_to_one_peer(listener, &file, chunk_size, peer_id).await?;
+            serve_file_to_one_peer_with_options(
+                listener,
+                &file,
+                chunk_size,
+                ServeFileOptions::new(peer_id, log_level),
+            )
+            .await?;
 
             println!("[seeder] transfer completed");
         }
@@ -104,14 +120,18 @@ async fn main() -> anyhow::Result<()> {
             println!("[peer] connecting to {peer}");
             println!("[peer] output path: {}", output.display());
 
-            let manifest = download_file_from_peer(peer, &output, peer_id).await?;
+            let manifest = download_file_from_peer_with_options(
+                peer,
+                &output,
+                DownloadFileOptions::new(peer_id, log_level),
+            )
+            .await?;
 
-            println!("[peer] manifest received");
+            println!("[peer] transfer completed");
             println!("[peer] file: {}", manifest.file_name);
             println!("[peer] file_id: {}", manifest.file_id);
             println!("[peer] file size: {} bytes", manifest.file_size);
             println!("[peer] chunks: {}", manifest.chunks.len());
-            println!("[peer] transfer completed");
         }
 
         Command::Connect { peer, peer_id } => {

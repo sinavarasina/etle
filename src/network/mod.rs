@@ -11,4 +11,8 @@ pub use key_exchange::{
     server_shared_secret_exchange,
 };
 pub use tcp::{accept_peer, bind_listener, connect_peer};
-pub use transfer::{download_file_from_peer, serve_file_to_one_peer};
+pub use transfer::{
+    DownloadFileOptions, ServeFileOptions, TransferLogLevel, download_file_from_peer,
+    download_file_from_peer_with_options, serve_file_to_one_peer,
+    serve_file_to_one_peer_with_options,
+};
