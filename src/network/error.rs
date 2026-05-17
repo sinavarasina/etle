@@ -1,19 +1,34 @@
 use thiserror::Error;
 
+use crate::{
+    crypto::error::CryptoError,
+    file::error::FileError,
+    protocol::{ProtocolError, WireMessage},
+};
+
 #[derive(Debug, Error)]
 pub enum NetworkError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
     #[error("protocol error: {0}")]
-    Protocol(#[from] crate::protocol::ProtocolError),
+    Protocol(#[from] ProtocolError),
 
     #[error("crypto error: {0}")]
-    Crypto(#[from] crate::crypto::error::CryptoError),
+    Crypto(#[from] CryptoError),
 
-    #[error("expected hello message during handshake")]
-    ExpectedHello,
+    #[error("file error: {0}")]
+    File(#[from] FileError),
 
-    #[error("expected key exchange message during handshake")]
-    ExpectedKeyExchange,
+    #[error("unexpected wire message: expected {expected}, got {actual:?}")]
+    UnexpectedMessage {
+        expected: &'static str,
+        actual: WireMessage,
+    },
+
+    #[error("missing encrypted chunk with index {0}")]
+    MissingEncryptedChunk(u32),
+
+    #[error("unexpected chunk index: expected {expected}, got {actual}")]
+    UnexpectedChunkIndex { expected: u32, actual: u32 },
 }
