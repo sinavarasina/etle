@@ -92,7 +92,7 @@ impl DownloadFileOptions {
             peer_id: peer_id.into(),
             log_level,
             library_root: None,
-            resume: false,
+            resume: true,
         }
     }
 

@@ -1,5 +1,9 @@
 #[cfg(feature = "cli")]
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    fs,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 #[cfg(feature = "cli")]
 use clap::{Parser, Subcommand};
@@ -13,7 +17,7 @@ use etle::{
         download_file_from_peers_with_options, serve_file_to_one_peer_with_options,
         serve_library_share_to_one_peer,
     },
-    state::{ShareMode, default_library_root, list_library_shares},
+    state::{OUTPUT_DIR_NAME, ShareMode, default_library_root, list_library_shares},
 };
 
 #[cfg(feature = "cli")]
@@ -88,9 +92,9 @@ enum Command {
         #[arg(long, required = true)]
         peer: Vec<SocketAddr>,
 
-        /// Output file path.
+        /// Output file path. Defaults to <library-root>/output/<file-name-from-manifest>.
         #[arg(long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
 
         /// Local peer identifier sent during hello handshake.
         #[arg(long, default_value = "etle-peer")]
@@ -101,8 +105,13 @@ enum Command {
         library_root: Option<PathBuf>,
 
         /// Reuse verified encrypted chunks from the local .etle library when available.
+        /// This is enabled by default; the flag is accepted for explicitness.
         #[arg(long)]
         resume: bool,
+
+        /// Ignore existing local chunks and fetch chunks from peers again.
+        #[arg(long)]
+        no_resume: bool,
 
         /// Number of parallel peer workers for multi-peer download.
         #[arg(long, default_value_t = 1)]
@@ -220,26 +229,46 @@ async fn main() -> anyhow::Result<()> {
             peer_id,
             library_root,
             resume,
+            no_resume,
             parallel,
         } => {
+            if resume && no_resume {
+                anyhow::bail!("--resume and --no-resume cannot be used together");
+            }
+
+            let resume_enabled = !no_resume;
+
             let library_root = library_root.unwrap_or_else(default_library_root);
 
             println!("[peer] peer count: {}", peer.len());
             for (index, peer_addr) in peer.iter().enumerate() {
                 println!("[peer] peer {}: {peer_addr}", index + 1);
             }
-            println!("[peer] output path: {}", output.display());
+            let auto_output = output.is_none();
+            let output = output.unwrap_or_else(|| temporary_download_output_path(&library_root));
+            create_output_parent_dir(&output)?;
+
+            if auto_output {
+                println!(
+                    "[peer] output path: automatic ({} / manifest file name)",
+                    default_download_output_dir(&library_root).display()
+                );
+            } else {
+                println!("[peer] output path: {}", output.display());
+            }
             println!("[peer] library root: {}", library_root.display());
-            if resume || peer.len() > 1 {
+            if resume_enabled {
                 println!("[peer] resume enabled");
+            } else {
+                println!("[peer] resume disabled: existing local chunks will be ignored");
             }
             if parallel > 1 {
                 println!("[peer] parallel workers: {parallel}");
             }
 
             let options = DownloadFileOptions::new(peer_id, log_level)
-                .with_library_root(library_root)
-                .with_resume(resume);
+                .with_library_root(library_root.clone())
+                .with_resume(resume_enabled);
 
             let manifest = if parallel > 1 {
                 download_file_from_peers_parallel_with_options(peer, &output, options, parallel)
@@ -248,7 +277,14 @@ async fn main() -> anyhow::Result<()> {
                 download_file_from_peers_with_options(peer, &output, options).await?
             };
 
+            let final_output = if auto_output {
+                move_auto_download_output(&output, &library_root, &manifest.file_name)?
+            } else {
+                output.clone()
+            };
+
             println!("[peer] transfer completed");
+            println!("[peer] output: {}", final_output.display());
             println!("[peer] file: {}", manifest.file_name);
             println!("[peer] file_id: {}", manifest.file_id);
             println!("[peer] file size: {} bytes", manifest.file_size);
@@ -266,6 +302,89 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn default_download_output_dir(library_root: &Path) -> PathBuf {
+    library_root.join(OUTPUT_DIR_NAME)
+}
+
+#[cfg(feature = "cli")]
+fn temporary_download_output_path(library_root: &Path) -> PathBuf {
+    default_download_output_dir(library_root)
+        .join(format!(".etle-download-{}.part", std::process::id()))
+}
+
+#[cfg(feature = "cli")]
+fn move_auto_download_output(
+    temporary_output: &Path,
+    library_root: &Path,
+    manifest_file_name: &str,
+) -> anyhow::Result<PathBuf> {
+    let final_output = unique_output_path(default_download_output_path(
+        library_root,
+        manifest_file_name,
+    ));
+    create_output_parent_dir(&final_output)?;
+    fs::rename(temporary_output, &final_output)?;
+
+    Ok(final_output)
+}
+
+#[cfg(feature = "cli")]
+fn default_download_output_path(library_root: &Path, manifest_file_name: &str) -> PathBuf {
+    default_download_output_dir(library_root).join(safe_output_file_name(manifest_file_name))
+}
+
+#[cfg(feature = "cli")]
+fn safe_output_file_name(file_name: &str) -> String {
+    Path::new(file_name)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "downloaded-file".to_string())
+}
+
+#[cfg(feature = "cli")]
+fn create_output_parent_dir(path: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn unique_output_path(path: PathBuf) -> PathBuf {
+    if !path.exists() {
+        return path;
+    }
+
+    let parent = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "downloaded-file".to_string());
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().into_owned());
+
+    for copy_index in 1_u32.. {
+        let file_name = match &extension {
+            Some(extension) => format!("{stem} ({copy_index}).{extension}"),
+            None => format!("{stem} ({copy_index})"),
+        };
+        let candidate = parent.join(file_name);
+
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded copy index loop must return before overflowing")
 }
 
 #[cfg(feature = "cli")]
