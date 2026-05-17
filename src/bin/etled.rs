@@ -3,6 +3,7 @@ use std::{net::SocketAddr, path::PathBuf};
 use clap::{Parser, Subcommand};
 
 use etle::{
+    ipc::{default_ipc_socket_path, serve_ipc_forever},
     network::{ServeFileOptions, TransferLogLevel, bind_listener, serve_library_forever},
     state::{default_library_root, list_library_shares},
 };
@@ -37,6 +38,14 @@ enum Command {
         /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
         #[arg(long)]
         library_root: Option<PathBuf>,
+
+        /// Local IPC socket path. Unix uses a filesystem socket; Windows named pipes come later.
+        #[arg(long)]
+        ipc_socket: Option<PathBuf>,
+
+        /// Disable the local IPC command socket.
+        #[arg(long)]
+        no_ipc: bool,
     },
 }
 
@@ -54,17 +63,32 @@ async fn main() -> anyhow::Result<()> {
             listen,
             peer_id,
             library_root,
+            ipc_socket,
+            no_ipc,
         } => {
             let library_root = library_root.unwrap_or_else(default_library_root);
+            let ipc_socket = ipc_socket.unwrap_or_else(|| default_ipc_socket_path(&library_root));
             print_startup_banner(&library_root, listen)?;
 
             let listener = bind_listener(listen).await?;
-            serve_library_forever(
-                listener,
-                &library_root,
-                ServeFileOptions::new(peer_id, log_level),
-            )
-            .await?;
+            let serve_options = ServeFileOptions::new(peer_id, log_level);
+
+            if no_ipc {
+                println!("[daemon] ipc: disabled");
+                serve_library_forever(listener, &library_root, serve_options).await?;
+            } else {
+                println!("[daemon] ipc socket: {}", ipc_socket.display());
+                println!("[daemon] ipc commands: Ping, ListShares, Shutdown");
+
+                let p2p_library_root = library_root.clone();
+                let p2p_task = tokio::spawn(async move {
+                    serve_library_forever(listener, p2p_library_root, serve_options).await
+                });
+
+                let ipc_result = serve_ipc_forever(&ipc_socket, &library_root).await;
+                p2p_task.abort();
+                ipc_result?;
+            }
         }
     }
 

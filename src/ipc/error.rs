@@ -19,4 +19,7 @@ pub enum IpcError {
 
     #[error("IPC frame has trailing bytes: decoded {bytes_read} bytes from {frame_len} bytes")]
     TrailingBytes { bytes_read: usize, frame_len: usize },
+
+    #[error("unsupported platform: {0}")]
+    UnsupportedPlatform(&'static str),
 }
