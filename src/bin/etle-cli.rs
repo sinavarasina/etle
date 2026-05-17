@@ -9,8 +9,9 @@ use etle::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     network::{
         DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        client_hello_handshake, connect_peer, download_file_from_peers_with_options,
-        serve_file_to_one_peer_with_options, serve_library_share_to_one_peer,
+        client_hello_handshake, connect_peer, download_file_from_peers_parallel_with_options,
+        download_file_from_peers_with_options, serve_file_to_one_peer_with_options,
+        serve_library_share_to_one_peer,
     },
     state::{ShareMode, list_library_shares},
 };
@@ -102,6 +103,10 @@ enum Command {
         /// Reuse verified encrypted chunks from the local .etle library when available.
         #[arg(long)]
         resume: bool,
+
+        /// Number of parallel peer workers for multi-peer download.
+        #[arg(long, default_value_t = 1)]
+        parallel: usize,
     },
 
     /// Perform a basic TCP + hello handshake probe.
@@ -209,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
             peer_id,
             library_root,
             resume,
+            parallel,
         } => {
             println!("[peer] peer count: {}", peer.len());
             for (index, peer_addr) in peer.iter().enumerate() {
@@ -219,15 +225,20 @@ async fn main() -> anyhow::Result<()> {
             if resume || peer.len() > 1 {
                 println!("[peer] resume enabled");
             }
+            if parallel > 1 {
+                println!("[peer] parallel workers: {parallel}");
+            }
 
-            let manifest = download_file_from_peers_with_options(
-                peer,
-                &output,
-                DownloadFileOptions::new(peer_id, log_level)
-                    .with_library_root(library_root)
-                    .with_resume(resume),
-            )
-            .await?;
+            let options = DownloadFileOptions::new(peer_id, log_level)
+                .with_library_root(library_root)
+                .with_resume(resume);
+
+            let manifest = if parallel > 1 {
+                download_file_from_peers_parallel_with_options(peer, &output, options, parallel)
+                    .await?
+            } else {
+                download_file_from_peers_with_options(peer, &output, options).await?
+            };
 
             println!("[peer] transfer completed");
             println!("[peer] file: {}", manifest.file_name);

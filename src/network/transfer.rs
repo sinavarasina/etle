@@ -1,13 +1,16 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
+    io::ErrorKind,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
     crypto::{
+        aead::SymmetricKey,
         hash::hash_chunk,
         key_exchange::derive_session_key,
         key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
@@ -15,14 +18,14 @@ use crate::{
     file::{
         descriptor::{EtleDescriptor, FileEntry, ShareId},
         error::FileError,
-        manifest::Manifest,
+        manifest::{ChunkMeta, Manifest},
         storage::{EncryptedChunk, EncryptedFile, decrypt_to_file, encrypt_file},
     },
     network::{
         NetworkError, accept_peer, client_hello_handshake, client_shared_secret_exchange,
         connect_peer, server_hello_handshake, server_shared_secret_exchange,
     },
-    protocol::{WireMessage, receive_message, send_message},
+    protocol::{ProtocolError, WireMessage, receive_message, send_message},
     state::{
         DownloadProgress, LibraryPaths, ShareMode, ShareState, has_encrypted_chunk,
         initialize_share_library, read_descriptor, read_encrypted_chunk, read_progress,
@@ -213,7 +216,18 @@ pub async fn serve_file_to_one_peer_with_options(
     let mut served_or_known = std::collections::BTreeSet::new();
 
     while served_or_known.len() < total_chunks {
-        match receive_message(&mut stream).await? {
+        let message = match receive_message(&mut stream).await {
+            Ok(message) => message,
+            Err(error) if is_peer_closed_protocol_error(&error) => {
+                if log_level.is_normal() {
+                    println!("[seeder] peer disconnected before requesting all chunks");
+                }
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        match message {
             WireMessage::Have { chunks } => {
                 for index in chunks {
                     if encrypted.chunks.contains_key(&index) {
@@ -333,7 +347,18 @@ pub async fn serve_library_share_to_one_peer(
 
     let mut served_or_known = std::collections::BTreeSet::new();
     while served_or_known.len() < total_chunks {
-        match receive_message(&mut stream).await? {
+        let message = match receive_message(&mut stream).await {
+            Ok(message) => message,
+            Err(error) if is_peer_closed_protocol_error(&error) => {
+                if log_level.is_normal() {
+                    println!("[seeder] peer disconnected before requesting all chunks");
+                }
+                return Ok(descriptor);
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        match message {
             WireMessage::Have { chunks } => {
                 for index in chunks {
                     if descriptor.chunks.iter().any(|chunk| chunk.index == index) {
@@ -447,6 +472,223 @@ pub async fn download_file_from_peers_with_options(
         attempts: total_peers,
         last_error: last_error.unwrap_or_else(|| "unknown error".to_string()),
     })
+}
+
+pub async fn download_file_from_peers_parallel_with_options(
+    peer_addrs: impl IntoIterator<Item = SocketAddr>,
+    output_path: impl AsRef<Path>,
+    options: DownloadFileOptions,
+    parallelism: usize,
+) -> Result<Manifest, NetworkError> {
+    let peer_addrs = peer_addrs.into_iter().collect::<Vec<_>>();
+    if peer_addrs.is_empty() {
+        return Err(NetworkError::NoPeersProvided);
+    }
+
+    if parallelism <= 1 || peer_addrs.len() == 1 {
+        return download_file_from_peers_with_options(
+            peer_addrs,
+            output_path,
+            options.with_resume(true),
+        )
+        .await;
+    }
+
+    let output_path = output_path.as_ref();
+    let worker_limit = parallelism.min(peer_addrs.len());
+
+    if options.log_level.is_normal() {
+        println!(
+            "[peer] parallel download enabled: workers={worker_limit}, peers={}",
+            peer_addrs.len()
+        );
+    }
+
+    let mut connected_peers = Vec::new();
+    let mut reference_manifest = None;
+    let mut reference_file_key = None;
+    let mut last_error = None;
+
+    for peer_addr in peer_addrs.into_iter().take(worker_limit) {
+        match connect_download_peer(peer_addr, options.peer_id.clone(), options.log_level).await {
+            Ok(peer) => {
+                if let Some(reference) = &reference_manifest {
+                    if !manifests_are_compatible(reference, &peer.manifest) {
+                        if options.log_level.is_normal() {
+                            println!("[peer] skipping {peer_addr}: manifest mismatch");
+                        }
+                        continue;
+                    }
+                } else {
+                    reference_file_key = Some(peer.file_key);
+                    reference_manifest = Some(peer.manifest.clone());
+                }
+
+                if let Some(file_key) = reference_file_key {
+                    if peer.file_key != file_key {
+                        if options.log_level.is_normal() {
+                            println!("[peer] skipping {peer_addr}: file key mismatch");
+                        }
+                        continue;
+                    }
+                }
+
+                connected_peers.push(peer);
+            }
+            Err(error) => {
+                if options.log_level.is_normal() {
+                    println!("[peer] failed to prepare parallel peer {peer_addr}: {error}");
+                }
+                last_error = Some(error.to_string());
+            }
+        }
+    }
+
+    let Some(manifest) = reference_manifest else {
+        return Err(NetworkError::AllPeersFailed {
+            attempts: worker_limit,
+            last_error: last_error.unwrap_or_else(|| "no compatible peer prepared".to_string()),
+        });
+    };
+
+    let Some(file_key) = reference_file_key else {
+        return Err(NetworkError::AllPeersFailed {
+            attempts: worker_limit,
+            last_error: last_error.unwrap_or_else(|| "file key was not received".to_string()),
+        });
+    };
+
+    if connected_peers.is_empty() {
+        return Err(NetworkError::AllPeersFailed {
+            attempts: worker_limit,
+            last_error: last_error.unwrap_or_else(|| "no compatible peer prepared".to_string()),
+        });
+    }
+
+    let descriptor = descriptor_from_manifest(&manifest);
+    let output_state_dir = output_parent_dir(output_path);
+    let mut library_state = initialize_download_library_state(
+        options.library_root.as_deref(),
+        &descriptor,
+        file_key,
+        output_state_dir.clone(),
+        true,
+        options.log_level,
+    )?;
+
+    let existing_chunks = load_resumable_chunks(
+        &mut library_state,
+        &manifest,
+        output_state_dir.clone(),
+        options.log_level,
+    )?;
+
+    let missing_chunks = manifest
+        .chunks
+        .iter()
+        .filter(|meta| !existing_chunks.contains_key(&meta.index))
+        .map(|meta| meta.index)
+        .collect::<VecDeque<_>>();
+
+    if missing_chunks.is_empty() {
+        if options.log_level.is_normal() {
+            println!("[peer] all chunks already available in local state");
+            println!("[peer] decrypting and reconstructing file...");
+        }
+
+        let encrypted = EncryptedFile {
+            manifest: manifest.clone(),
+            chunks: existing_chunks,
+        };
+        decrypt_to_file(&encrypted, &file_key, output_path)?;
+        mark_download_library_complete(&library_state, output_state_dir)?;
+        return Ok(manifest);
+    }
+
+    let total_chunks = manifest.chunks.len();
+    let queue = Arc::new(Mutex::new(missing_chunks));
+    let chunks = Arc::new(Mutex::new(existing_chunks));
+    let state = Arc::new(Mutex::new(library_state));
+    let manifest = Arc::new(manifest);
+
+    let mut handles = Vec::with_capacity(connected_peers.len());
+    for peer in connected_peers {
+        let queue = Arc::clone(&queue);
+        let chunks = Arc::clone(&chunks);
+        let state = Arc::clone(&state);
+        let manifest = Arc::clone(&manifest);
+        let output_state_dir = output_state_dir.clone();
+        let log_level = options.log_level;
+
+        handles.push(tokio::spawn(async move {
+            parallel_download_worker(
+                peer,
+                manifest,
+                queue,
+                chunks,
+                state,
+                output_state_dir,
+                log_level,
+            )
+            .await
+        }));
+    }
+
+    let mut worker_errors = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => worker_errors.push(error.to_string()),
+            Err(error) => worker_errors.push(error.to_string()),
+        }
+    }
+
+    let chunks = match Arc::try_unwrap(chunks) {
+        Ok(chunks) => chunks.into_inner().expect("parallel chunk mutex poisoned"),
+        Err(chunks) => chunks
+            .lock()
+            .expect("parallel chunk mutex poisoned")
+            .clone(),
+    };
+
+    if chunks.len() != total_chunks {
+        if let Some(meta) = manifest
+            .chunks
+            .iter()
+            .find(|meta| !chunks.contains_key(&meta.index))
+        {
+            if options.log_level.is_normal() && !worker_errors.is_empty() {
+                println!(
+                    "[peer] parallel worker errors: {}",
+                    worker_errors.join("; ")
+                );
+            }
+            return Err(NetworkError::MissingEncryptedChunk(meta.index));
+        }
+    }
+
+    if options.log_level.is_normal() {
+        println!("[peer] decrypting and reconstructing file...");
+    }
+
+    let encrypted = EncryptedFile {
+        manifest: (*manifest).clone(),
+        chunks,
+    };
+
+    decrypt_to_file(&encrypted, &file_key, output_path)?;
+
+    {
+        let state = state.lock().expect("parallel state mutex poisoned");
+        mark_download_library_complete(&state, output_state_dir)?;
+    }
+
+    if options.log_level.is_normal() {
+        println!("[peer] final hash verified: {}", manifest.file_id);
+        println!("[peer] output written: {}", output_path.display());
+    }
+
+    Ok((*manifest).clone())
 }
 
 pub async fn download_file_from_peer_with_options(
@@ -630,6 +872,225 @@ pub async fn download_file_from_peer_with_options(
     }
 
     Ok(manifest)
+}
+
+struct ConnectedDownloadPeer {
+    peer_addr: SocketAddr,
+    stream: TcpStream,
+    manifest: Manifest,
+    file_key: SymmetricKey,
+}
+
+async fn connect_download_peer(
+    peer_addr: SocketAddr,
+    peer_id: String,
+    log_level: TransferLogLevel,
+) -> Result<ConnectedDownloadPeer, NetworkError> {
+    let mut stream = connect_peer(peer_addr).await?;
+
+    if log_level.is_normal() {
+        println!("[peer] connected to {peer_addr}");
+    }
+
+    let remote_peer_id = client_hello_handshake(&mut stream, peer_id).await?;
+    if log_level.is_normal() {
+        println!("[peer] hello handshake completed with {remote_peer_id}");
+    }
+
+    let shared_secret = client_shared_secret_exchange(&mut stream).await?;
+    if log_level.is_normal() {
+        println!("[peer] key exchange completed");
+    }
+
+    let manifest = match receive_message(&mut stream).await? {
+        WireMessage::Manifest { manifest } => manifest,
+        actual => {
+            return Err(NetworkError::UnexpectedMessage {
+                expected: "Manifest",
+                actual,
+            });
+        }
+    };
+
+    if log_level.is_normal() {
+        println!(
+            "[peer] manifest received from {peer_addr}: file=\"{}\", size={} bytes, chunks={}",
+            manifest.file_name,
+            manifest.file_size,
+            manifest.chunks.len()
+        );
+    }
+
+    let session_key = derive_session_key(shared_secret);
+    let wrapped_file_key = match receive_message(&mut stream).await? {
+        WireMessage::WrappedFileKey { nonce, data } => WrappedFileKey { nonce, data },
+        actual => {
+            return Err(NetworkError::UnexpectedMessage {
+                expected: "WrappedFileKey",
+                actual,
+            });
+        }
+    };
+
+    let file_key = unwrap_file_key(&session_key, manifest.file_id, &wrapped_file_key)?;
+    if log_level.is_normal() {
+        println!("[peer] wrapped file key received and unlocked from {peer_addr}");
+    }
+
+    Ok(ConnectedDownloadPeer {
+        peer_addr,
+        stream,
+        manifest,
+        file_key,
+    })
+}
+
+async fn parallel_download_worker(
+    mut peer: ConnectedDownloadPeer,
+    manifest: Arc<Manifest>,
+    queue: Arc<Mutex<VecDeque<u32>>>,
+    chunks: Arc<Mutex<BTreeMap<u32, EncryptedChunk>>>,
+    state: Arc<Mutex<Option<ActiveDownloadLibraryState>>>,
+    output_dir: Option<PathBuf>,
+    log_level: TransferLogLevel,
+) -> Result<(), NetworkError> {
+    let initial_have = {
+        let chunks = chunks.expect_lock("parallel chunk mutex poisoned");
+        chunks.keys().copied().collect::<Vec<_>>()
+    };
+
+    if !initial_have.is_empty() {
+        send_message(
+            &mut peer.stream,
+            &WireMessage::Have {
+                chunks: initial_have,
+            },
+        )
+        .await?;
+    }
+
+    loop {
+        let Some(index) = pop_next_missing_chunk(&queue, &chunks) else {
+            break;
+        };
+
+        let Some(meta) = manifest.chunks.iter().find(|meta| meta.index == index) else {
+            continue;
+        };
+
+        match request_chunk_from_peer(&mut peer.stream, meta).await {
+            Ok(encrypted_chunk) => {
+                let chunk_len = encrypted_chunk.data.len();
+
+                {
+                    let mut state = state.expect_lock("parallel state mutex poisoned");
+                    persist_downloaded_chunk(&mut state, &encrypted_chunk, output_dir.clone())?;
+                }
+
+                let done = {
+                    let mut chunks = chunks.expect_lock("parallel chunk mutex poisoned");
+                    chunks.insert(index, encrypted_chunk);
+                    chunks.len()
+                };
+
+                log_chunk_progress(
+                    "peer",
+                    "parallel received+verified",
+                    log_level,
+                    done,
+                    manifest.chunks.len(),
+                    index,
+                    chunk_len,
+                );
+            }
+            Err(error) => {
+                queue
+                    .expect_lock("parallel queue mutex poisoned")
+                    .push_back(index);
+                return Err(error);
+            }
+        }
+    }
+
+    let final_have = {
+        let chunks = chunks.expect_lock("parallel chunk mutex poisoned");
+        chunks.keys().copied().collect::<Vec<_>>()
+    };
+
+    if !final_have.is_empty() {
+        let _ = send_message(&mut peer.stream, &WireMessage::Have { chunks: final_have }).await;
+    }
+
+    if log_level.is_normal() {
+        println!("[peer] parallel worker finished: {}", peer.peer_addr);
+    }
+
+    Ok(())
+}
+
+async fn request_chunk_from_peer(
+    stream: &mut TcpStream,
+    meta: &ChunkMeta,
+) -> Result<EncryptedChunk, NetworkError> {
+    send_message(stream, &WireMessage::RequestChunk { index: meta.index }).await?;
+
+    match receive_message(stream).await? {
+        WireMessage::Chunk { index, data } => {
+            if index != meta.index {
+                return Err(NetworkError::UnexpectedChunkIndex {
+                    expected: meta.index,
+                    actual: index,
+                });
+            }
+
+            let actual_hash = hash_chunk(&data);
+            if actual_hash != meta.blake3_hash {
+                return Err(FileError::ChunkHashMismatch(meta.index).into());
+            }
+
+            Ok(EncryptedChunk { index, data })
+        }
+        actual => Err(NetworkError::UnexpectedMessage {
+            expected: "Chunk",
+            actual,
+        }),
+    }
+}
+
+fn pop_next_missing_chunk(
+    queue: &Mutex<VecDeque<u32>>,
+    chunks: &Mutex<BTreeMap<u32, EncryptedChunk>>,
+) -> Option<u32> {
+    loop {
+        let index = queue
+            .expect_lock("parallel queue mutex poisoned")
+            .pop_front()?;
+
+        if !chunks
+            .expect_lock("parallel chunk mutex poisoned")
+            .contains_key(&index)
+        {
+            return Some(index);
+        }
+    }
+}
+
+fn manifests_are_compatible(left: &Manifest, right: &Manifest) -> bool {
+    left.file_id == right.file_id
+        && left.file_name == right.file_name
+        && left.file_size == right.file_size
+        && left.chunk_size == right.chunk_size
+        && left.chunks == right.chunks
+}
+
+trait MutexExpectLock<T> {
+    fn expect_lock(&self, message: &str) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> MutexExpectLock<T> for Mutex<T> {
+    fn expect_lock(&self, message: &str) -> std::sync::MutexGuard<'_, T> {
+        self.lock().expect(message)
+    }
 }
 
 fn descriptor_from_manifest(manifest: &Manifest) -> EtleDescriptor {
@@ -848,6 +1309,17 @@ fn output_parent_dir(output_path: &Path) -> Option<PathBuf> {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .map(Path::to_path_buf)
+}
+
+fn is_peer_closed_protocol_error(error: &ProtocolError) -> bool {
+    matches!(
+        error,
+        ProtocolError::Io(io_error)
+            if matches!(
+                io_error.kind(),
+                ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
+            )
+    )
 }
 
 fn log_chunk_progress(
