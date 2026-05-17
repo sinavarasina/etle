@@ -13,7 +13,7 @@ use crate::{
         key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
     },
     file::{
-        descriptor::{EtleDescriptor, FileEntry},
+        descriptor::{EtleDescriptor, FileEntry, ShareId},
         error::FileError,
         manifest::Manifest,
         storage::{EncryptedChunk, EncryptedFile, decrypt_to_file, encrypt_file},
@@ -25,7 +25,8 @@ use crate::{
     protocol::{WireMessage, receive_message, send_message},
     state::{
         DownloadProgress, LibraryPaths, ShareMode, ShareState, initialize_share_library,
-        write_encrypted_chunk, write_progress, write_state,
+        read_descriptor, read_encrypted_chunk, read_secret, write_encrypted_chunk, write_progress,
+        write_state,
     },
 };
 
@@ -244,6 +245,112 @@ pub async fn serve_file_to_one_peer_with_options(
     Ok(())
 }
 
+pub async fn serve_library_share_to_one_peer(
+    listener: TcpListener,
+    library_root: impl AsRef<Path>,
+    share_id: ShareId,
+    options: ServeFileOptions,
+) -> Result<EtleDescriptor, NetworkError> {
+    let ServeFileOptions {
+        seeder_id,
+        log_level,
+        library_root: _,
+    } = options;
+    let paths = LibraryPaths::for_share(library_root, share_id);
+    let descriptor = read_descriptor(&paths)?;
+    let secret = read_secret(&paths)?;
+    let manifest = manifest_from_descriptor(&descriptor)?;
+    let total_chunks = descriptor.chunks.len();
+
+    let (mut stream, peer_addr) = accept_peer(&listener).await?;
+    if log_level.is_normal() {
+        println!("[seeder] peer connected: {peer_addr}");
+        println!(
+            "[seeder] loading share state: name=\"{}\", share_id={}",
+            descriptor.name, descriptor.share_id
+        );
+    }
+
+    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
+    if log_level.is_normal() {
+        println!("[seeder] hello handshake completed with {remote_peer_id}");
+    }
+
+    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
+    let session_key = derive_session_key(shared_secret);
+    if log_level.is_normal() {
+        println!("[seeder] key exchange completed");
+    }
+
+    send_message(
+        &mut stream,
+        &WireMessage::Manifest {
+            manifest: manifest.clone(),
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] manifest sent from persisted state");
+    }
+
+    let wrapped_file_key = wrap_file_key(&session_key, manifest.file_id, &secret.file_key)?;
+    send_message(
+        &mut stream,
+        &WireMessage::WrappedFileKey {
+            nonce: wrapped_file_key.nonce,
+            data: wrapped_file_key.data,
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] wrapped file key sent");
+    }
+
+    let mut served = std::collections::BTreeSet::new();
+    while served.len() < total_chunks {
+        match receive_message(&mut stream).await? {
+            WireMessage::RequestChunk { index } => {
+                let meta = descriptor
+                    .chunks
+                    .iter()
+                    .find(|chunk| chunk.index == index)
+                    .ok_or(NetworkError::MissingEncryptedChunk(index))?;
+                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
+
+                send_message(
+                    &mut stream,
+                    &WireMessage::Chunk {
+                        index,
+                        data: chunk.data.clone(),
+                    },
+                )
+                .await?;
+
+                served.insert(index);
+                log_chunk_progress(
+                    "seeder",
+                    "served-from-state",
+                    log_level,
+                    served.len(),
+                    total_chunks,
+                    index,
+                    chunk.data.len(),
+                );
+            }
+            actual => {
+                return Err(NetworkError::UnexpectedMessage {
+                    expected: "RequestChunk",
+                    actual,
+                });
+            }
+        }
+    }
+
+    Ok(descriptor)
+}
+
 pub async fn download_file_from_peer(
     peer_addr: SocketAddr,
     output_path: impl AsRef<Path>,
@@ -422,6 +529,23 @@ fn descriptor_from_manifest(manifest: &Manifest) -> EtleDescriptor {
         }],
         manifest.chunks.clone(),
     )
+}
+
+fn manifest_from_descriptor(descriptor: &EtleDescriptor) -> Result<Manifest, NetworkError> {
+    if descriptor.files.len() != 1 {
+        return Err(NetworkError::UnsupportedMultiFileDescriptor(
+            descriptor.files.len(),
+        ));
+    }
+
+    let file = &descriptor.files[0];
+    Ok(Manifest {
+        file_id: file.blake3_hash,
+        file_name: file.path.clone(),
+        file_size: descriptor.total_size,
+        chunk_size: descriptor.chunk_size,
+        chunks: descriptor.chunks.clone(),
+    })
 }
 
 fn persist_seed_library_state(

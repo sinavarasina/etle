@@ -31,4 +31,7 @@ pub enum NetworkError {
 
     #[error("unexpected chunk index: expected {expected}, got {actual}")]
     UnexpectedChunkIndex { expected: u32, actual: u32 },
+
+    #[error("state seeding currently supports exactly one file entry, got {0}")]
+    UnsupportedMultiFileDescriptor(usize),
 }

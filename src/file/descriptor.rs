@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,39 @@ impl ShareId {
 impl fmt::Display for ShareId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_hex(f, &self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseShareIdError;
+
+impl fmt::Display for ParseShareIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "share id must be 64 lowercase/uppercase hexadecimal characters"
+        )
+    }
+}
+
+impl std::error::Error for ParseShareIdError {}
+
+impl FromStr for ShareId {
+    type Err = ParseShareIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.len() != 64 {
+            return Err(ParseShareIdError);
+        }
+
+        let value = value.as_bytes();
+        let mut bytes = [0_u8; 32];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            let offset = index * 2;
+            *byte = decode_hex_pair(value[offset], value[offset + 1])?;
+        }
+
+        Ok(Self(bytes))
     }
 }
 
@@ -176,6 +209,19 @@ fn hash_string(hasher: &mut blake3::Hasher, value: &str) {
     hasher.update(bytes);
 }
 
+fn decode_hex_pair(high: u8, low: u8) -> Result<u8, ParseShareIdError> {
+    Ok((decode_hex_nibble(high)? << 4) | decode_hex_nibble(low)?)
+}
+
+fn decode_hex_nibble(value: u8) -> Result<u8, ParseShareIdError> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(ParseShareIdError),
+    }
+}
+
 fn write_hex(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
     for byte in bytes {
         write!(f, "{byte:02x}")?;
@@ -200,6 +246,15 @@ mod tests {
             nonce: Nonce([index as u8; 24]),
             blake3_hash: ChunkHash([index as u8; 32]),
         }
+    }
+
+    #[test]
+    fn share_id_parses_from_display_hex() {
+        let share_id = ShareId([0xab_u8; 32]);
+        let parsed = share_id.to_string().parse::<ShareId>().unwrap();
+
+        assert_eq!(parsed, share_id);
+        assert!("not-a-share-id".parse::<ShareId>().is_err());
     }
 
     #[test]

@@ -14,5 +14,5 @@ pub use tcp::{accept_peer, bind_listener, connect_peer};
 pub use transfer::{
     DownloadFileOptions, ServeFileOptions, TransferLogLevel, download_file_from_peer,
     download_file_from_peer_with_options, serve_file_to_one_peer,
-    serve_file_to_one_peer_with_options,
+    serve_file_to_one_peer_with_options, serve_library_share_to_one_peer,
 };

@@ -226,6 +226,99 @@ impl LibraryPaths {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalShareSummary {
+    pub paths: LibraryPaths,
+    pub descriptor: EtleDescriptor,
+    pub progress: Option<DownloadProgress>,
+    pub state: Option<ShareState>,
+    pub has_secret: bool,
+}
+
+impl LocalShareSummary {
+    #[must_use]
+    pub fn completed_chunks(&self) -> usize {
+        self.progress
+            .as_ref()
+            .map_or(0, |progress| progress.completed_chunks.len())
+    }
+
+    #[must_use]
+    pub fn total_chunks(&self) -> usize {
+        self.descriptor.chunks.len()
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> Option<ShareMode> {
+        self.state.as_ref().map(|state| state.mode)
+    }
+}
+
+pub fn list_library_shares(root: impl AsRef<Path>) -> Result<Vec<LocalShareSummary>, FileError> {
+    let root = root.as_ref();
+    let library_dir = root.join(ETLE_DIR_NAME).join(LIBRARY_DIR_NAME);
+
+    if !library_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut shares = Vec::new();
+    for entry in fs::read_dir(library_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+
+        let Ok(share_id) = name.parse::<ShareId>() else {
+            continue;
+        };
+
+        let paths = LibraryPaths::for_share(root, share_id);
+        if !paths.descriptor_path().is_file() {
+            continue;
+        }
+
+        let descriptor = read_descriptor(&paths)?;
+        let progress = if paths.progress_path().is_file() {
+            Some(read_progress(&paths)?)
+        } else {
+            None
+        };
+        let state = if paths.state_path().is_file() {
+            Some(read_state(&paths)?)
+        } else {
+            None
+        };
+
+        shares.push(LocalShareSummary {
+            has_secret: paths.secret_path().is_file(),
+            paths,
+            descriptor,
+            progress,
+            state,
+        });
+    }
+
+    shares.sort_by(|left, right| {
+        left.descriptor
+            .name
+            .cmp(&right.descriptor.name)
+            .then_with(|| {
+                left.descriptor
+                    .share_id
+                    .to_string()
+                    .cmp(&right.descriptor.share_id.to_string())
+            })
+    });
+
+    Ok(shares)
+}
+
 pub fn initialize_share_library(
     root: impl AsRef<Path>,
     descriptor: &EtleDescriptor,
@@ -426,6 +519,29 @@ mod tests {
             Vec::<u32>::new()
         );
         assert_eq!(read_state(&paths).unwrap().mode, ShareMode::Downloading);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lists_local_library_shares() {
+        let root = temp_dir_name("state-list");
+        let _ = fs::remove_dir_all(&root);
+        let descriptor = sample_descriptor();
+        let key = SymmetricKey([9_u8; 32]);
+
+        let paths =
+            initialize_share_library(&root, &descriptor, key, ShareMode::Seeding, None).unwrap();
+
+        let shares = list_library_shares(&root).unwrap();
+
+        assert_eq!(shares.len(), 1);
+        assert_eq!(shares[0].descriptor, descriptor);
+        assert_eq!(shares[0].paths, paths);
+        assert_eq!(shares[0].mode(), Some(ShareMode::Seeding));
+        assert_eq!(shares[0].completed_chunks(), 1);
+        assert_eq!(shares[0].total_chunks(), 1);
+        assert!(shares[0].has_secret);
 
         fs::remove_dir_all(root).unwrap();
     }
