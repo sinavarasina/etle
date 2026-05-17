@@ -96,6 +96,10 @@ enum Command {
         #[arg(long, required = true)]
         peer: Vec<SocketAddr>,
 
+        /// Share ID to request from a multi-share library server.
+        #[arg(long)]
+        share_id: Option<ShareId>,
+
         /// Output file path. Defaults to <library-root>/output/<file-name-from-manifest>.
         #[arg(long)]
         output: Option<PathBuf>,
@@ -254,6 +258,7 @@ async fn main() -> anyhow::Result<()> {
 
         Command::Download {
             peer,
+            share_id,
             output,
             peer_id,
             library_root,
@@ -272,6 +277,9 @@ async fn main() -> anyhow::Result<()> {
             println!("[peer] peer count: {}", peer.len());
             for (index, peer_addr) in peer.iter().enumerate() {
                 println!("[peer] peer {}: {peer_addr}", index + 1);
+            }
+            if let Some(share_id) = share_id {
+                println!("[peer] requested share_id: {share_id}");
             }
             let auto_output = output.is_none();
             let output = output.unwrap_or_else(|| temporary_download_output_path(&library_root));
@@ -297,7 +305,8 @@ async fn main() -> anyhow::Result<()> {
 
             let options = DownloadFileOptions::new(peer_id, log_level)
                 .with_library_root(library_root.clone())
-                .with_resume(resume_enabled);
+                .with_resume(resume_enabled)
+                .with_requested_share_id(share_id);
 
             let manifest = if parallel > 1 {
                 download_file_from_peers_parallel_with_options(peer, &output, options, parallel)

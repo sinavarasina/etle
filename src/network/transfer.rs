@@ -83,6 +83,7 @@ pub struct DownloadFileOptions {
     pub log_level: TransferLogLevel,
     pub library_root: Option<PathBuf>,
     pub resume: bool,
+    pub requested_share_id: Option<ShareId>,
 }
 
 impl DownloadFileOptions {
@@ -93,6 +94,7 @@ impl DownloadFileOptions {
             log_level,
             library_root: None,
             resume: true,
+            requested_share_id: None,
         }
     }
 
@@ -105,6 +107,12 @@ impl DownloadFileOptions {
     #[must_use]
     pub const fn with_resume(mut self, resume: bool) -> Self {
         self.resume = resume;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_requested_share_id(mut self, share_id: Option<ShareId>) -> Self {
+        self.requested_share_id = share_id;
         self
     }
 }
@@ -808,7 +816,14 @@ pub async fn download_file_from_peers_parallel_with_options(
     let mut last_error = None;
 
     for peer_addr in peer_addrs.into_iter().take(worker_limit) {
-        match connect_download_peer(peer_addr, options.peer_id.clone(), options.log_level).await {
+        match connect_download_peer(
+            peer_addr,
+            options.peer_id.clone(),
+            options.log_level,
+            options.requested_share_id,
+        )
+        .await
+        {
             Ok(peer) => {
                 if let Some(reference) = &reference_manifest {
                     if !manifests_are_compatible(reference, &peer.manifest) {
@@ -999,6 +1014,7 @@ pub async fn download_file_from_peer_with_options(
         log_level,
         library_root,
         resume,
+        requested_share_id,
     } = options;
     let output_path = output_path.as_ref();
     let mut stream = connect_peer(peer_addr).await?;
@@ -1016,6 +1032,8 @@ pub async fn download_file_from_peer_with_options(
     if log_level.is_normal() {
         println!("[peer] key exchange completed");
     }
+
+    send_requested_share_if_needed(&mut stream, requested_share_id, log_level).await?;
 
     let manifest = match receive_message(&mut stream).await? {
         WireMessage::Manifest { manifest } => manifest,
@@ -1209,10 +1227,29 @@ struct ConnectedDownloadPeer {
     available_chunks: BTreeSet<u32>,
 }
 
+async fn send_requested_share_if_needed(
+    stream: &mut TcpStream,
+    share_id: Option<ShareId>,
+    log_level: TransferLogLevel,
+) -> Result<(), NetworkError> {
+    let Some(share_id) = share_id else {
+        return Ok(());
+    };
+
+    send_message(stream, &WireMessage::RequestShare { share_id }).await?;
+
+    if log_level.is_normal() {
+        println!("[peer] requested share_id: {share_id}");
+    }
+
+    Ok(())
+}
+
 async fn connect_download_peer(
     peer_addr: SocketAddr,
     peer_id: String,
     log_level: TransferLogLevel,
+    requested_share_id: Option<ShareId>,
 ) -> Result<ConnectedDownloadPeer, NetworkError> {
     let mut stream = connect_peer(peer_addr).await?;
 
@@ -1229,6 +1266,8 @@ async fn connect_download_peer(
     if log_level.is_normal() {
         println!("[peer] key exchange completed");
     }
+
+    send_requested_share_if_needed(&mut stream, requested_share_id, log_level).await?;
 
     let manifest = match receive_message(&mut stream).await? {
         WireMessage::Manifest { manifest } => manifest,
