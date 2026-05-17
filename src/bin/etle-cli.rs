@@ -15,7 +15,7 @@ use etle::{
         DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
         client_hello_handshake, connect_peer, download_file_from_peers_parallel_with_options,
         download_file_from_peers_with_options, serve_file_to_one_peer_with_options,
-        serve_library_share_forever, serve_library_share_to_one_peer,
+        serve_library_forever, serve_library_share_forever, serve_library_share_to_one_peer,
     },
     state::{OUTPUT_DIR_NAME, ShareMode, default_library_root, list_library_shares},
 };
@@ -120,6 +120,21 @@ enum Command {
         /// Number of parallel peer workers for multi-peer download.
         #[arg(long, default_value_t = 1)]
         parallel: usize,
+    },
+
+    /// Serve any local library share requested by peers over one P2P port.
+    ServeLibrary {
+        /// TCP listen address.
+        #[arg(long, default_value = "127.0.0.1:7000")]
+        listen: SocketAddr,
+
+        /// Local peer identifier sent during hello handshake.
+        #[arg(long, default_value = "etle-seeder")]
+        peer_id: String,
+
+        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
+        #[arg(long)]
+        library_root: Option<PathBuf>,
     },
 
     /// Perform a basic TCP + hello handshake probe.
@@ -303,6 +318,28 @@ async fn main() -> anyhow::Result<()> {
             println!("[peer] file_id: {}", manifest.file_id);
             println!("[peer] file size: {} bytes", manifest.file_size);
             println!("[peer] chunks: {}", manifest.chunks.len());
+        }
+
+        Command::ServeLibrary {
+            listen,
+            peer_id,
+            library_root,
+        } => {
+            let library_root = library_root.unwrap_or_else(default_library_root);
+
+            println!("[seeder] serving local library");
+            println!("[seeder] listen address: {listen}");
+            println!("[seeder] library root: {}", library_root.display());
+            println!("[seeder] peers must request a share_id with RequestShare");
+            println!("[seeder] serving continuously; press Ctrl+C to stop");
+
+            let listener = bind_listener(listen).await?;
+            serve_library_forever(
+                listener,
+                &library_root,
+                ServeFileOptions::new(peer_id, log_level),
+            )
+            .await?;
         }
 
         Command::Connect { peer, peer_id } => {

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     crypto::{aead::Nonce, key_exchange::PublicKeyBytes},
-    file::manifest::Manifest,
+    file::{descriptor::ShareId, manifest::Manifest},
 };
 
 /// Messages exchanged by ETLE peers.
@@ -14,6 +14,7 @@ pub enum WireMessage {
     Hello { peer_id: String },
     KeyExchange { public_key: PublicKeyBytes },
     RequestManifest,
+    RequestShare { share_id: ShareId },
     Manifest { manifest: Manifest },
     WrappedFileKey { nonce: Nonce, data: Vec<u8> },
     Have { chunks: Vec<u32> },
