@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 #[cfg(feature = "cli")]
 use etle::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
+    ipc::{IpcCommand, IpcResponse, IpcShareSummary, default_ipc_socket_path, send_ipc_command},
     network::{
         DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
         client_hello_handshake, connect_peer, download_file_from_peers_parallel_with_options,
@@ -141,6 +142,20 @@ enum Command {
         library_root: Option<PathBuf>,
     },
 
+    /// Send commands to a running etled daemon over local IPC.
+    Daemon {
+        /// Local IPC socket path. Defaults to <library-root>/.etle/etled.sock.
+        #[arg(long)]
+        ipc_socket: Option<PathBuf>,
+
+        /// Root directory used to resolve the default IPC socket path.
+        #[arg(long)]
+        library_root: Option<PathBuf>,
+
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+
     /// Perform a basic TCP + hello handshake probe.
     Connect {
         /// Seeder peer address.
@@ -154,10 +169,24 @@ enum Command {
 }
 
 #[cfg(feature = "cli")]
+#[derive(Debug, Subcommand)]
+enum DaemonCommand {
+    /// Check whether etled is reachable over IPC.
+    Ping,
+
+    /// List shares through the daemon instead of reading state directly.
+    List,
+
+    /// Ask the daemon to shut down gracefully.
+    Shutdown,
+}
+
+#[cfg(feature = "cli")]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let log_level = if cli.verbose {
+    let verbose = cli.verbose;
+    let log_level = if verbose {
         TransferLogLevel::Verbose
     } else {
         TransferLogLevel::Normal
@@ -351,6 +380,28 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
 
+        Command::Daemon {
+            ipc_socket,
+            library_root,
+            command,
+        } => {
+            let library_root = library_root.unwrap_or_else(default_library_root);
+            let socket_path = ipc_socket.unwrap_or_else(|| default_ipc_socket_path(&library_root));
+
+            if verbose {
+                println!("[daemon] ipc socket: {}", socket_path.display());
+            }
+
+            let command = match command {
+                DaemonCommand::Ping => IpcCommand::Ping,
+                DaemonCommand::List => IpcCommand::ListShares,
+                DaemonCommand::Shutdown => IpcCommand::Shutdown,
+            };
+
+            let response = send_ipc_command(&socket_path, command).await?;
+            print_ipc_response(response)?;
+        }
+
         Command::Connect { peer, peer_id } => {
             println!("[peer] connecting to {peer}");
 
@@ -445,6 +496,42 @@ fn unique_output_path(path: PathBuf) -> PathBuf {
     }
 
     unreachable!("unbounded copy index loop must return before overflowing")
+}
+
+#[cfg(feature = "cli")]
+fn print_ipc_response(response: IpcResponse) -> anyhow::Result<()> {
+    match response {
+        IpcResponse::Pong => println!("[daemon] pong"),
+        IpcResponse::Ack { message } => println!("[daemon] {message}"),
+        IpcResponse::Shares { shares } => print_ipc_shares(shares),
+        IpcResponse::TransferQueued { share_id } => {
+            println!("[daemon] transfer queued: {share_id}");
+        }
+        IpcResponse::Error { message } => anyhow::bail!(message),
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn print_ipc_shares(shares: Vec<IpcShareSummary>) {
+    if shares.is_empty() {
+        println!("[daemon] no shares found");
+        return;
+    }
+
+    for share in shares {
+        let mode = share.mode.as_deref().unwrap_or("unknown");
+        let secret = if share.has_secret {
+            "key=yes"
+        } else {
+            "key=no"
+        };
+        println!(
+            "[daemon] {}  {mode}  chunks={}/{}  {secret}  name=\"{}\"",
+            share.share_id, share.completed_chunks, share.total_chunks, share.name
+        );
+    }
 }
 
 #[cfg(feature = "cli")]
