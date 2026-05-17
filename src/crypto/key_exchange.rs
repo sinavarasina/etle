@@ -43,6 +43,14 @@ impl EphemeralKeypair {
 }
 
 #[must_use]
+pub fn derive_session_key(shared_secret: SharedSecretBytes) -> SymmetricKey {
+    SymmetricKey(blake3::derive_key(
+        "etle v1 x25519 session key",
+        &shared_secret.0,
+    ))
+}
+
+#[must_use]
 pub fn derive_file_key(shared_secret: SharedSecretBytes, file_id: FileId) -> SymmetricKey {
     let mut material = Vec::with_capacity(64);
     material.extend_from_slice(&shared_secret.0);
@@ -67,6 +75,16 @@ mod tests {
         let bob_secret = bob.diffie_hellman(alice_public).unwrap();
 
         assert_eq!(alice_secret, bob_secret);
+    }
+
+    #[test]
+    fn same_secret_derives_same_session_key() {
+        let shared_secret = SharedSecretBytes([42_u8; 32]);
+
+        let first = derive_session_key(shared_secret);
+        let second = derive_session_key(shared_secret);
+
+        assert_eq!(first, second);
     }
 
     #[test]

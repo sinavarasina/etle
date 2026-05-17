@@ -10,4 +10,7 @@ pub enum CryptoError {
 
     #[error("invalid public key")]
     InvalidPublicKey,
+
+    #[error("invalid wrapped file key length")]
+    InvalidWrappedKeyLength,
 }

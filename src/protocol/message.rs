@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{crypto::key_exchange::PublicKeyBytes, file::manifest::Manifest};
+use crate::{
+    crypto::{aead::Nonce, key_exchange::PublicKeyBytes},
+    file::manifest::Manifest,
+};
 
 /// Messages exchanged by ETLE peers.
 ///
@@ -12,6 +15,7 @@ pub enum WireMessage {
     KeyExchange { public_key: PublicKeyBytes },
     RequestManifest,
     Manifest { manifest: Manifest },
+    WrappedFileKey { nonce: Nonce, data: Vec<u8> },
     Have { chunks: Vec<u32> },
     RequestChunk { index: u32 },
     Chunk { index: u32, data: Vec<u8> },

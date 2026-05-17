@@ -2,10 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    crypto::hash::FileId,
-    file::manifest::ChunkMeta,
-};
+use crate::{crypto::hash::FileId, file::manifest::ChunkMeta};
 
 pub const ETLE_DESCRIPTOR_VERSION: u16 = 1;
 

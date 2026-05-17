@@ -6,11 +6,7 @@ use std::{
 
 use crate::{
     crypto::hash::hash_file,
-    file::{
-        chunker::PlainChunk,
-        descriptor::FileEntry,
-        error::FileError,
-    },
+    file::{chunker::PlainChunk, descriptor::FileEntry, error::FileError},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

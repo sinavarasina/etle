@@ -3,7 +3,11 @@ use std::{collections::BTreeMap, net::SocketAddr, path::Path};
 use tokio::net::TcpListener;
 
 use crate::{
-    crypto::{hash::hash_chunk, key_exchange::derive_file_key},
+    crypto::{
+        hash::hash_chunk,
+        key_exchange::derive_session_key,
+        key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
+    },
     file::{
         error::FileError,
         manifest::Manifest,
@@ -114,10 +118,10 @@ pub async fn serve_file_to_one_peer_with_options(
         println!("[seeder] hashing and encrypting file...");
     }
 
-    // Encrypt after key exchange so every peer can receive chunks protected by
-    // the session-derived file key.
-    let file_id = crate::crypto::hash::hash_file(input_path)?;
-    let file_key = derive_file_key(shared_secret, file_id);
+    // The file key is now independent from the peer session. This makes
+    // encrypted chunks reusable by future swarm/partial-seeder flows.
+    let session_key = derive_session_key(shared_secret);
+    let file_key = generate_file_key();
     let encrypted = encrypt_file(input_path, &file_key, chunk_size)?;
     let total_chunks = encrypted.manifest.chunks.len();
 
@@ -134,6 +138,7 @@ pub async fn serve_file_to_one_peer_with_options(
             "[seeder] manifest chunk_size: {} bytes",
             encrypted.manifest.chunk_size
         );
+        println!("[seeder] generated reusable file key");
     }
 
     send_message(
@@ -146,6 +151,20 @@ pub async fn serve_file_to_one_peer_with_options(
 
     if log_level.is_normal() {
         println!("[seeder] manifest sent");
+    }
+
+    let wrapped_file_key = wrap_file_key(&session_key, encrypted.manifest.file_id, &file_key)?;
+    send_message(
+        &mut stream,
+        &WireMessage::WrappedFileKey {
+            nonce: wrapped_file_key.nonce,
+            data: wrapped_file_key.data,
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] wrapped file key sent");
     }
 
     let mut served = std::collections::BTreeSet::new();
@@ -251,7 +270,22 @@ pub async fn download_file_from_peer_with_options(
         println!("[peer] output path: {}", output_path.display());
     }
 
-    let file_key = derive_file_key(shared_secret, manifest.file_id);
+    let session_key = derive_session_key(shared_secret);
+    let wrapped_file_key = match receive_message(&mut stream).await? {
+        WireMessage::WrappedFileKey { nonce, data } => WrappedFileKey { nonce, data },
+        actual => {
+            return Err(NetworkError::UnexpectedMessage {
+                expected: "WrappedFileKey",
+                actual,
+            });
+        }
+    };
+
+    let file_key = unwrap_file_key(&session_key, manifest.file_id, &wrapped_file_key)?;
+    if log_level.is_normal() {
+        println!("[peer] wrapped file key received and unlocked");
+    }
+
     let mut chunks = BTreeMap::new();
 
     for (position, meta) in manifest.chunks.iter().enumerate() {
