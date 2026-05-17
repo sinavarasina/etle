@@ -40,7 +40,7 @@ Crypto Layer
 - [ ] Membuat struktur project seperti berikut:
 
 ```text
-p2p-crypto-transfer/
+etle/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs
@@ -81,8 +81,8 @@ p2p-crypto-transfer/
 │   │   └── components.rs
 │   │
 │   └── bin/
-│       ├── p2p-cli.rs
-│       └── p2p-gui.rs
+│       ├── etle-cli.rs
+│       └── etle-gui.rs
 │
 ├── tests/
 │   ├── crypto_test.rs
@@ -91,7 +91,8 @@ p2p-crypto-transfer/
 │   └── transfer_test.rs
 │
 └── examples/
-    └── local_transfer.rs
+    ├── local_roundtrip.rs
+    └── debug_roundtrip.rs
 ```
 
 ---
@@ -139,10 +140,10 @@ gtk4 = { version = "0.9", optional = true }
 
 ### T00 — Inisialisasi Project Rust
 
-- [ ] Membuat project Rust baru
-- [ ] Menentukan nama crate
-- [ ] Menggunakan Rust edition terbaru yang stabil di environment tim
-- [ ] Memastikan `cargo build` berhasil
+- [x] Membuat project Rust baru
+- [x] Menentukan nama crate
+- [x] Menggunakan Rust edition terbaru yang stabil di environment tim
+- [x] Memastikan `cargo build` berhasil
 
 Dependency:
 
@@ -150,50 +151,50 @@ Dependency:
 
 Definition of Done:
 
-- [ ] `cargo build` sukses
-- [ ] `cargo test` sukses walau belum ada test
+- [x] `cargo build` sukses
+- [x] `cargo test` sukses walau belum ada test
 
 ---
 
 ### T01 — Setup Module Structure
 
-- [ ] Membuat `src/lib.rs`
-- [ ] Membuat folder `crypto/`
-- [ ] Membuat folder `file/`
-- [ ] Membuat folder `protocol/`
-- [ ] Membuat folder `network/`
-- [ ] Membuat folder `app/`
-- [ ] Membuat folder `gui/`
-- [ ] Membuat folder `src/bin/`
+- [x] Membuat `src/lib.rs`
+- [x] Membuat folder `crypto/`
+- [x] Membuat folder `file/`
+- [x] Membuat folder `protocol/`
+- [x] Membuat folder `network/`
+- [x] Membuat folder `app/`
+- [x] Membuat folder `gui/`
+- [x] Membuat folder `src/bin/`
 
 Dependency:
 
-- [ ] T00
+- [x] T00
 
 Definition of Done:
 
-- [ ] Semua module bisa di-import dari `lib.rs`
-- [ ] `cargo check` sukses
+- [x] Semua module bisa di-import dari `lib.rs`
+- [x] `cargo check` sukses
 
 ---
 
 ### T02 — Setup Cargo Features dan Multi Binary
 
-- [ ] Menambahkan binary `p2p-cli`
-- [ ] Menambahkan binary `p2p-gui`
-- [ ] Membuat feature `cli`
-- [ ] Membuat feature `gui-relm4`
-- [ ] Membuat GUI dependency optional
+- [x] Menambahkan binary `etle-cli`
+- [x] Menambahkan binary `etle-gui`
+- [x] Membuat feature `cli`
+- [x] Membuat feature `gui-relm4`
+- [x] Membuat GUI dependency optional
 
 Dependency:
 
-- [ ] T00
-- [ ] T01
+- [x] T00
+- [x] T01
 
 Definition of Done:
 
-- [ ] `cargo run --bin p2p-cli -- --help` bisa dijalankan
-- [ ] `cargo run --features gui-relm4 --bin p2p-gui` bisa dibuild minimal
+- [x] `cargo run --bin etle-cli -- --help` bisa dijalankan
+- [x] `cargo run --features gui-relm4 --bin etle-gui` bisa dibuild minimal
 
 ---
 
@@ -201,126 +202,126 @@ Definition of Done:
 
 ### T03 — Implement BLAKE3 Hashing
 
-- [ ] Membuat fungsi hash untuk bytes
-- [ ] Membuat fungsi hash untuk file
-- [ ] Membuat fungsi hash untuk chunk
-- [ ] Membuat tipe `FileId`
-- [ ] Membuat tipe `ChunkHash`
+- [x] Membuat fungsi hash untuk bytes
+- [x] Membuat fungsi hash untuk file
+- [x] Membuat fungsi hash untuk chunk
+- [x] Membuat tipe `FileId`
+- [x] Membuat tipe `ChunkHash`
 
 Dependency:
 
-- [ ] T01
-- [ ] T02
+- [x] T01
+- [x] T02
 
 Definition of Done:
 
-- [ ] Hash input yang sama menghasilkan output yang sama
-- [ ] Hash input berbeda menghasilkan output berbeda
-- [ ] Unit test hashing sukses
+- [x] Hash input yang sama menghasilkan output yang sama
+- [x] Hash input berbeda menghasilkan output berbeda
+- [x] Unit test hashing sukses
 
 ---
 
 ### T04 — Implement XChaCha20-Poly1305 AEAD
 
-- [ ] Membuat fungsi encrypt chunk
-- [ ] Membuat fungsi decrypt chunk
-- [ ] Membuat generator nonce 24-byte
-- [ ] Memastikan nonce berbeda untuk setiap chunk
-- [ ] Memastikan authentication tag ikut dalam ciphertext
+- [x] Membuat fungsi encrypt chunk
+- [x] Membuat fungsi decrypt chunk
+- [x] Membuat generator nonce 24-byte
+- [x] Memastikan nonce berbeda untuk setiap chunk
+- [x] Memastikan authentication tag ikut dalam ciphertext
 
 Dependency:
 
-- [ ] T01
-- [ ] T02
+- [x] T01
+- [x] T02
 
 Definition of Done:
 
-- [ ] Plaintext bisa dienkripsi dan didekripsi kembali
-- [ ] Ciphertext yang diubah harus gagal decrypt
-- [ ] Nonce salah harus gagal decrypt
+- [x] Plaintext bisa dienkripsi dan didekripsi kembali
+- [x] Ciphertext yang diubah harus gagal decrypt
+- [x] Nonce salah harus gagal decrypt
 
 ---
 
 ### T05 — Implement X25519 Key Exchange
 
-- [ ] Membuat ephemeral keypair
-- [ ] Mengekspor public key
-- [ ] Menghitung shared secret
-- [ ] Memastikan dua peer menghasilkan shared secret yang sama
+- [x] Membuat ephemeral keypair
+- [x] Mengekspor public key
+- [x] Menghitung shared secret
+- [x] Memastikan dua peer menghasilkan shared secret yang sama
 
 Dependency:
 
-- [ ] T01
-- [ ] T02
+- [x] T01
+- [x] T02
 
 Definition of Done:
 
-- [ ] Peer A dan Peer B menghasilkan shared secret identik
-- [ ] Unit test key exchange sukses
+- [x] Peer A dan Peer B menghasilkan shared secret identik
+- [x] Unit test key exchange sukses
 
 ---
 
 ### T06 — Implement Key Derivation
 
-- [ ] Membuat fungsi derivasi `file_key`
-- [ ] Input derivasi memakai shared secret
-- [ ] Input derivasi memakai `file_id`
-- [ ] Output derivasi berupa 32-byte key
+- [x] Membuat fungsi derivasi `file_key`
+- [x] Input derivasi memakai shared secret
+- [x] Input derivasi memakai `file_id`
+- [x] Output derivasi berupa 32-byte key
 
 Dependency:
 
-- [ ] T03
-- [ ] T05
+- [x] T03
+- [x] T05
 
 Definition of Done:
 
-- [ ] Shared secret dan file ID yang sama menghasilkan key yang sama
-- [ ] File ID berbeda menghasilkan key berbeda
+- [x] Shared secret dan file ID yang sama menghasilkan key yang sama
+- [x] File ID berbeda menghasilkan key berbeda
 
 ---
 
 ### T07 — Implement AAD Format
 
-- [ ] Membuat format AAD untuk AEAD
-- [ ] AAD memuat `file_id`
-- [ ] AAD memuat `chunk_index`
-- [ ] AAD memuat `chunk_size`
-- [ ] AAD dipakai saat encrypt dan decrypt
+- [x] Membuat format AAD untuk AEAD
+- [x] AAD memuat `file_id`
+- [x] AAD memuat `chunk_index`
+- [x] AAD memuat `chunk_size`
+- [x] AAD dipakai saat encrypt dan decrypt
 
 Dependency:
 
-- [ ] T04
-- [ ] T06
+- [x] T04
+- [x] T06
 
 Definition of Done:
 
-- [ ] Chunk dengan AAD benar berhasil decrypt
-- [ ] Chunk dengan `chunk_index` salah gagal decrypt
-- [ ] Chunk dengan `file_id` salah gagal decrypt
+- [x] Chunk dengan AAD benar berhasil decrypt
+- [x] Chunk dengan `chunk_index` salah gagal decrypt
+- [x] Chunk dengan `file_id` salah gagal decrypt
 
 ---
 
 ### T08 — Crypto Unit Tests
 
-- [ ] Test BLAKE3 hash
-- [ ] Test AEAD encrypt/decrypt
-- [ ] Test tampered ciphertext
-- [ ] Test wrong nonce
-- [ ] Test wrong AAD
-- [ ] Test X25519 shared secret
-- [ ] Test key derivation
+- [x] Test BLAKE3 hash
+- [x] Test AEAD encrypt/decrypt
+- [x] Test tampered ciphertext
+- [x] Test wrong nonce
+- [x] Test wrong AAD
+- [x] Test X25519 shared secret
+- [x] Test key derivation
 
 Dependency:
 
-- [ ] T03
-- [ ] T04
-- [ ] T05
-- [ ] T06
-- [ ] T07
+- [x] T03
+- [x] T04
+- [x] T05
+- [x] T06
+- [x] T07
 
 Definition of Done:
 
-- [ ] Semua test crypto sukses
+- [x] Semua test crypto sukses
 
 ---
 
@@ -328,122 +329,122 @@ Definition of Done:
 
 ### T09 — Implement File Chunker
 
-- [ ] Membaca file dari disk
-- [ ] Memecah file menjadi chunk
-- [ ] Mendukung chunk size configurable
-- [ ] Menjaga urutan chunk berdasarkan index
+- [x] Membaca file dari disk
+- [x] Memecah file menjadi chunk
+- [x] Mendukung chunk size configurable
+- [x] Menjaga urutan chunk berdasarkan index
 
 Dependency:
 
-- [ ] T01
+- [x] T01
 
 Definition of Done:
 
-- [ ] File kecil bisa dipecah menjadi beberapa chunk
-- [ ] File besar bisa dipecah menjadi banyak chunk
-- [ ] Chunk terakhir boleh lebih kecil dari chunk size
+- [x] File kecil bisa dipecah menjadi beberapa chunk
+- [x] File besar bisa dipecah menjadi banyak chunk
+- [x] Chunk terakhir boleh lebih kecil dari chunk size
 
 ---
 
 ### T10 — Implement Chunk Metadata
 
-- [ ] Membuat struct `ChunkMeta`
-- [ ] Menyimpan `index`
-- [ ] Menyimpan `plain_size`
-- [ ] Menyimpan `encrypted_size`
-- [ ] Menyimpan `nonce`
-- [ ] Menyimpan `blake3_hash`
+- [x] Membuat struct `ChunkMeta`
+- [x] Menyimpan `index`
+- [x] Menyimpan `plain_size`
+- [x] Menyimpan `encrypted_size`
+- [x] Menyimpan `nonce`
+- [x] Menyimpan `blake3_hash`
 
 Dependency:
 
-- [ ] T03
-- [ ] T09
+- [x] T03
+- [x] T09
 
 Definition of Done:
 
-- [ ] Metadata terbentuk untuk setiap chunk
-- [ ] Metadata sesuai dengan chunk yang dibuat
+- [x] Metadata terbentuk untuk setiap chunk
+- [x] Metadata sesuai dengan chunk yang dibuat
 
 ---
 
 ### T11 — Implement Manifest Structure
 
-- [ ] Membuat struct `Manifest`
-- [ ] Menyimpan `file_id`
-- [ ] Menyimpan `file_name`
-- [ ] Menyimpan `file_size`
-- [ ] Menyimpan `chunk_size`
-- [ ] Menyimpan list `ChunkMeta`
+- [x] Membuat struct `Manifest`
+- [x] Menyimpan `file_id`
+- [x] Menyimpan `file_name`
+- [x] Menyimpan `file_size`
+- [x] Menyimpan `chunk_size`
+- [x] Menyimpan list `ChunkMeta`
 
 Dependency:
 
-- [ ] T10
+- [x] T10
 
 Definition of Done:
 
-- [ ] Manifest bisa dibuat dari file input
-- [ ] Manifest memiliki jumlah chunk yang benar
+- [x] Manifest bisa dibuat dari file input
+- [x] Manifest memiliki jumlah chunk yang benar
 
 ---
 
 ### T12 — Manifest Serialization
 
-- [ ] Serialize manifest ke binary
-- [ ] Deserialize manifest dari binary
-- [ ] Menambahkan test roundtrip serialization
+- [x] Serialize manifest ke binary
+- [x] Deserialize manifest dari binary
+- [x] Menambahkan test roundtrip serialization
 
 Dependency:
 
-- [ ] T02
-- [ ] T11
+- [x] T02
+- [x] T11
 
 Definition of Done:
 
-- [ ] Manifest sebelum serialize sama dengan manifest setelah deserialize
+- [x] Manifest sebelum serialize sama dengan manifest setelah deserialize
 
 ---
 
 ### T13 — Implement Encrypted Chunk Storage
 
-- [ ] Menyimpan encrypted chunk ke storage sementara
-- [ ] Membaca encrypted chunk berdasarkan index
-- [ ] Menyimpan nonce dan metadata di manifest
-- [ ] Memastikan data plaintext tidak perlu disimpan setelah encrypt
+- [x] Menyimpan encrypted chunk ke storage sementara
+- [x] Membaca encrypted chunk berdasarkan index
+- [x] Menyimpan nonce dan metadata di manifest
+- [x] Memastikan data plaintext tidak perlu disimpan setelah encrypt
 
 Dependency:
 
-- [ ] T04
-- [ ] T11
+- [x] T04
+- [x] T11
 
 Definition of Done:
 
-- [ ] Encrypted chunk bisa disimpan
-- [ ] Encrypted chunk bisa dibaca ulang
-- [ ] Metadata chunk tetap valid
+- [x] Encrypted chunk bisa disimpan
+- [x] Encrypted chunk bisa dibaca ulang
+- [x] Metadata chunk tetap valid
 
 ---
 
 ### T14 — Local Reconstruct Test
 
-- [ ] File dipecah menjadi chunk
-- [ ] Chunk dienkripsi
-- [ ] Chunk diverifikasi
-- [ ] Chunk didekripsi
-- [ ] File disusun ulang
-- [ ] Hash file hasil dibandingkan dengan hash file awal
+- [x] File dipecah menjadi chunk
+- [x] Chunk dienkripsi
+- [x] Chunk diverifikasi
+- [x] Chunk didekripsi
+- [x] File disusun ulang
+- [x] Hash file hasil dibandingkan dengan hash file awal
 
 Dependency:
 
-- [ ] T08
-- [ ] T09
-- [ ] T10
-- [ ] T11
-- [ ] T12
-- [ ] T13
+- [x] T08
+- [x] T09
+- [x] T10
+- [x] T11
+- [x] T12
+- [x] T13
 
 Definition of Done:
 
-- [ ] `BLAKE3(input_file) == BLAKE3(output_file)`
+- [x] `BLAKE3(input_file) == BLAKE3(output_file)`
 
 ---
 
@@ -771,7 +772,7 @@ Dependency:
 
 Definition of Done:
 
-- [ ] `p2p-cli seed ./sample.mp4 --listen 0.0.0.0:7000` berjalan
+- [ ] `etle-cli seed ./sample.mp4 --listen 0.0.0.0:7000` berjalan
 
 ---
 
@@ -789,7 +790,7 @@ Dependency:
 
 Definition of Done:
 
-- [ ] `p2p-cli connect --peer 127.0.0.1:7000` berjalan
+- [ ] `etle-cli connect --peer 127.0.0.1:7000` berjalan
 
 ---
 
@@ -949,7 +950,7 @@ Definition of Done:
 
 ### T41 — Setup GUI Binary
 
-- [ ] Membuat `src/bin/p2p-gui.rs`
+- [ ] Membuat `src/bin/etle-gui.rs`
 - [ ] Menambahkan feature `gui-relm4`
 - [ ] Memastikan GUI binary bisa dibuild
 
@@ -959,7 +960,7 @@ Dependency:
 
 Definition of Done:
 
-- [ ] `cargo run --features gui-relm4 --bin p2p-gui` berjalan
+- [ ] `cargo run --features gui-relm4 --bin etle-gui` berjalan
 
 ---
 
@@ -1228,21 +1229,21 @@ Definition of Done:
 
 ## Wajib untuk MVP
 
-- [ ] T00 — Inisialisasi Project Rust
-- [ ] T01 — Setup Module Structure
-- [ ] T02 — Setup Cargo Features dan Multi Binary
-- [ ] T03 — Implement BLAKE3 Hashing
-- [ ] T04 — Implement XChaCha20-Poly1305 AEAD
-- [ ] T05 — Implement X25519 Key Exchange
-- [ ] T06 — Implement Key Derivation
-- [ ] T07 — Implement AAD Format
-- [ ] T08 — Crypto Unit Tests
-- [ ] T09 — Implement File Chunker
-- [ ] T10 — Implement Chunk Metadata
-- [ ] T11 — Implement Manifest Structure
-- [ ] T12 — Manifest Serialization
-- [ ] T13 — Implement Encrypted Chunk Storage
-- [ ] T14 — Local Reconstruct Test
+- [x] T00 — Inisialisasi Project Rust
+- [x] T01 — Setup Module Structure
+- [x] T02 — Setup Cargo Features dan Multi Binary
+- [x] T03 — Implement BLAKE3 Hashing
+- [x] T04 — Implement XChaCha20-Poly1305 AEAD
+- [x] T05 — Implement X25519 Key Exchange
+- [x] T06 — Implement Key Derivation
+- [x] T07 — Implement AAD Format
+- [x] T08 — Crypto Unit Tests
+- [x] T09 — Implement File Chunker
+- [x] T10 — Implement Chunk Metadata
+- [x] T11 — Implement Manifest Structure
+- [x] T12 — Manifest Serialization
+- [x] T13 — Implement Encrypted Chunk Storage
+- [x] T14 — Local Reconstruct Test
 - [ ] T15 — Define Wire Message
 - [ ] T16 — Implement Protocol Codec
 - [ ] T17 — Protocol Serialization Tests
@@ -1298,25 +1299,27 @@ Definition of Done:
 
 ## Sprint 1 — Crypto dan Chunking
 
-- [ ] T00
-- [ ] T01
-- [ ] T02
-- [ ] T03
-- [ ] T04
-- [ ] T05
-- [ ] T06
-- [ ] T07
-- [ ] T08
-- [ ] T09
-- [ ] T10
-- [ ] T11
-- [ ] T12
-- [ ] T13
-- [ ] T14
+Status: complete. Sprint 2 dapat dimulai setelah `cargo test` dan `debug_roundtrip` berhasil.
+
+- [x] T00
+- [x] T01
+- [x] T02
+- [x] T03
+- [x] T04
+- [x] T05
+- [x] T06
+- [x] T07
+- [x] T08
+- [x] T09
+- [x] T10
+- [x] T11
+- [x] T12
+- [x] T13
+- [x] T14
 
 Goal:
 
-- [ ] File bisa dipecah, dienkripsi, diverifikasi, didekripsi, dan direkonstruksi secara lokal
+- [x] File bisa dipecah, dienkripsi, diverifikasi, didekripsi, dan direkonstruksi secara lokal
 
 ---
 
@@ -1414,11 +1417,11 @@ Goal:
 Command target:
 
 ```bash
-cargo run --bin p2p-cli -- seed ./sample.mp4 --listen 0.0.0.0:7000
+cargo run --bin etle-cli -- seed ./sample.mp4 --listen 0.0.0.0:7000
 ```
 
 ```bash
-cargo run --bin p2p-cli -- download --peer 127.0.0.1:7000 --output ./received.mp4
+cargo run --bin etle-cli -- download --peer 127.0.0.1:7000 --output ./received.mp4
 ```
 
 Expected output:
