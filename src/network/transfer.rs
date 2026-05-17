@@ -117,6 +117,34 @@ impl DownloadFileOptions {
     }
 }
 
+pub fn add_file_to_library(
+    input_path: impl AsRef<Path>,
+    chunk_size: usize,
+    library_root: impl AsRef<Path>,
+    log_level: TransferLogLevel,
+) -> Result<EtleDescriptor, NetworkError> {
+    let input_path = input_path.as_ref();
+
+    if log_level.is_normal() {
+        println!("[daemon] adding file to library: {}", input_path.display());
+        println!("[daemon] chunk size: {chunk_size} bytes");
+    }
+
+    let file_key = generate_file_key();
+    let encrypted = encrypt_file(input_path, &file_key, chunk_size)?;
+    let descriptor = descriptor_from_manifest(&encrypted.manifest);
+
+    persist_seed_library_state(
+        Some(library_root.as_ref()),
+        &encrypted.manifest,
+        file_key,
+        &encrypted.chunks,
+        log_level,
+    )?;
+
+    Ok(descriptor)
+}
+
 pub async fn serve_file_to_one_peer(
     listener: TcpListener,
     input_path: impl AsRef<Path>,

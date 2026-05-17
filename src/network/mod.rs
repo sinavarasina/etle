@@ -12,9 +12,9 @@ pub use key_exchange::{
 };
 pub use tcp::{accept_peer, bind_listener, connect_peer};
 pub use transfer::{
-    DownloadFileOptions, ServeFileOptions, TransferLogLevel, download_file_from_peer,
-    download_file_from_peer_with_options, download_file_from_peers_parallel_with_options,
-    download_file_from_peers_with_options, serve_file_to_one_peer,
-    serve_file_to_one_peer_with_options, serve_library_forever, serve_library_share_forever,
-    serve_library_share_to_one_peer, serve_library_to_one_peer,
+    DownloadFileOptions, ServeFileOptions, TransferLogLevel, add_file_to_library,
+    download_file_from_peer, download_file_from_peer_with_options,
+    download_file_from_peers_parallel_with_options, download_file_from_peers_with_options,
+    serve_file_to_one_peer, serve_file_to_one_peer_with_options, serve_library_forever,
+    serve_library_share_forever, serve_library_share_to_one_peer, serve_library_to_one_peer,
 };

@@ -1,9 +1,5 @@
 #[cfg(feature = "cli")]
-use std::{
-    fs,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::{net::SocketAddr, path::PathBuf};
 
 #[cfg(feature = "cli")]
 use clap::{Parser, Subcommand};
@@ -12,13 +8,7 @@ use clap::{Parser, Subcommand};
 use etle::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{IpcCommand, IpcResponse, IpcShareSummary, default_ipc_socket_path, send_ipc_command},
-    network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        client_hello_handshake, connect_peer, download_file_from_peers_parallel_with_options,
-        download_file_from_peers_with_options, serve_file_to_one_peer_with_options,
-        serve_library_forever, serve_library_share_forever, serve_library_share_to_one_peer,
-    },
-    state::{OUTPUT_DIR_NAME, ShareMode, default_library_root, list_library_shares},
+    state::default_library_root,
 };
 
 #[cfg(feature = "cli")]
@@ -26,12 +16,16 @@ use etle::{
 #[command(
     name = "etle-cli",
     version,
-    about = "Experimental torrent-like encrypted file transfer"
+    about = "ETLE command client for the etled daemon"
 )]
 struct Cli {
-    /// Show detailed transfer logs.
+    /// Show detailed CLI logs.
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Local etled IPC socket path. Defaults to $ETLE_LIBRARY_ROOT/.etle/etled.sock or ~/Downloads/ETLE/.etle/etled.sock.
+    #[arg(long, global = true)]
+    ipc_socket: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -40,80 +34,34 @@ struct Cli {
 #[cfg(feature = "cli")]
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Seed one file to one peer over TCP.
+    /// Ask etled to add a file into the local library and make it seedable.
     Seed {
-        /// File to seed.
+        /// File to add to the daemon library.
         file: PathBuf,
-
-        /// TCP listen address.
-        #[arg(long, default_value = "127.0.0.1:7000")]
-        listen: SocketAddr,
 
         /// Chunk size in bytes.
         #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
         chunk_size: usize,
-
-        /// Local peer identifier sent during hello handshake.
-        #[arg(long, default_value = "etle-seeder")]
-        peer_id: String,
-
-        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
-        #[arg(long)]
-        library_root: Option<PathBuf>,
     },
 
-    /// Seed an already persisted share from the local .etle library.
-    SeedState {
-        /// Share ID to seed from .etle/library/<share_id>.
-        share_id: ShareId,
+    /// List local shares through etled.
+    List,
 
-        /// TCP listen address.
-        #[arg(long, default_value = "127.0.0.1:7000")]
-        listen: SocketAddr,
-
-        /// Local peer identifier sent during hello handshake.
-        #[arg(long, default_value = "etle-seeder")]
-        peer_id: String,
-
-        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
-        #[arg(long)]
-        library_root: Option<PathBuf>,
-
-        /// Keep serving this share after one peer disconnects.
-        #[arg(long)]
-        forever: bool,
-    },
-
-    /// List local shares stored in the .etle library.
-    List {
-        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
-        #[arg(long)]
-        library_root: Option<PathBuf>,
-    },
-
-    /// Download a file from one or more seeder peers.
+    /// Ask etled to download a share from one or more peers.
     Download {
-        /// Seeder peer address. Can be repeated for sequential fallback.
+        /// Seeder peer address. Can be repeated for fallback or parallel download.
         #[arg(long, required = true)]
         peer: Vec<SocketAddr>,
 
         /// Share ID to request from a multi-share library server.
         #[arg(long)]
-        share_id: Option<ShareId>,
+        share_id: ShareId,
 
-        /// Output file path. Defaults to <library-root>/output/<file-name-from-manifest>.
+        /// Output file path. Defaults to <daemon-library-root>/output/<file-name-from-manifest>.
         #[arg(long)]
         output: Option<PathBuf>,
 
-        /// Local peer identifier sent during hello handshake.
-        #[arg(long, default_value = "etle-peer")]
-        peer_id: String,
-
-        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
-        #[arg(long)]
-        library_root: Option<PathBuf>,
-
-        /// Reuse verified encrypted chunks from the local .etle library when available.
+        /// Reuse verified encrypted chunks from the daemon library when available.
         /// This is enabled by default; the flag is accepted for explicitness.
         #[arg(long)]
         resume: bool,
@@ -127,57 +75,23 @@ enum Command {
         parallel: usize,
     },
 
-    /// Serve any local library share requested by peers over one P2P port.
-    ServeLibrary {
-        /// TCP listen address.
-        #[arg(long, default_value = "127.0.0.1:7000")]
-        listen: SocketAddr,
-
-        /// Local peer identifier sent during hello handshake.
-        #[arg(long, default_value = "etle-seeder")]
-        peer_id: String,
-
-        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
-        #[arg(long)]
-        library_root: Option<PathBuf>,
-    },
-
-    /// Send commands to a running etled daemon over local IPC.
+    /// Send direct daemon control commands.
     Daemon {
-        /// Local IPC socket path. Defaults to <library-root>/.etle/etled.sock.
-        #[arg(long)]
-        ipc_socket: Option<PathBuf>,
-
-        /// Root directory used to resolve the default IPC socket path.
-        #[arg(long)]
-        library_root: Option<PathBuf>,
-
         #[command(subcommand)]
         command: DaemonCommand,
-    },
-
-    /// Perform a basic TCP + hello handshake probe.
-    Connect {
-        /// Seeder peer address.
-        #[arg(long)]
-        peer: SocketAddr,
-
-        /// Local peer identifier sent during hello handshake.
-        #[arg(long, default_value = "etle-probe")]
-        peer_id: String,
     },
 }
 
 #[cfg(feature = "cli")]
 #[derive(Debug, Subcommand)]
 enum DaemonCommand {
-    /// Check whether etled is reachable over IPC.
+    /// Check whether etled is reachable.
     Ping,
 
-    /// List shares through the daemon instead of reading state directly.
+    /// List local shares through etled.
     List,
 
-    /// Ask the daemon to shut down gracefully.
+    /// Ask etled to shut down.
     Shutdown,
 }
 
@@ -185,364 +99,115 @@ enum DaemonCommand {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let verbose = cli.verbose;
-    let log_level = if verbose {
-        TransferLogLevel::Verbose
-    } else {
-        TransferLogLevel::Normal
-    };
+    let socket_path = cli
+        .ipc_socket
+        .unwrap_or_else(|| default_ipc_socket_path(default_library_root()));
 
-    match cli.command {
-        Command::Seed {
-            file,
-            listen,
+    if cli.verbose {
+        println!("[cli] ipc socket: {}", socket_path.display());
+    }
+
+    let command = match cli.command {
+        Command::Seed { file, chunk_size } => IpcCommand::SeedFile {
+            input: file,
             chunk_size,
-            peer_id,
-            library_root,
-        } => {
-            let library_root = library_root.unwrap_or_else(default_library_root);
-
-            println!("[seeder] loading file: {}", file.display());
-            println!("[seeder] listen address: {listen}");
-            println!("[seeder] chunk size: {chunk_size} bytes");
-            println!("[seeder] library root: {}", library_root.display());
-            println!("[seeder] waiting for one peer...");
-
-            let listener = bind_listener(listen).await?;
-            serve_file_to_one_peer_with_options(
-                listener,
-                &file,
-                chunk_size,
-                ServeFileOptions::new(peer_id, log_level).with_library_root(library_root),
-            )
-            .await?;
-
-            println!("[seeder] transfer completed");
-        }
-
-        Command::SeedState {
-            share_id,
-            listen,
-            peer_id,
-            forever,
-            library_root,
-        } => {
-            let library_root = library_root.unwrap_or_else(default_library_root);
-
-            println!("[seeder] loading share from state: {share_id}");
-            println!("[seeder] listen address: {listen}");
-            println!("[seeder] library root: {}", library_root.display());
-
-            let listener = bind_listener(listen).await?;
-            let serve_options = ServeFileOptions::new(peer_id, log_level);
-
-            if forever {
-                println!("[seeder] serving continuously; press Ctrl+C to stop");
-                serve_library_share_forever(listener, &library_root, share_id, serve_options)
-                    .await?;
-            } else {
-                println!("[seeder] waiting for one peer...");
-
-                let descriptor = serve_library_share_to_one_peer(
-                    listener,
-                    &library_root,
-                    share_id,
-                    serve_options,
-                )
-                .await?;
-
-                println!("[seeder] transfer completed");
-                println!("[seeder] share: {}", descriptor.name);
-                println!("[seeder] share_id: {}", descriptor.share_id);
-                println!("[seeder] chunks: {}", descriptor.chunks.len());
-            }
-        }
-
-        Command::List { library_root } => {
-            let library_root = library_root.unwrap_or_else(default_library_root);
-
-            let shares = list_library_shares(&library_root)?;
-            println!("[library] root: {}", library_root.display());
-
-            if shares.is_empty() {
-                println!("[library] no shares found");
-            } else {
-                for share in shares {
-                    let mode = format_share_mode(share.mode());
-                    let secret = if share.has_secret {
-                        "key=yes"
-                    } else {
-                        "key=no"
-                    };
-                    println!(
-                        "[library] {}  {mode}  chunks={}/{}  {secret}  name=\"{}\"",
-                        share.descriptor.share_id,
-                        share.completed_chunks(),
-                        share.total_chunks(),
-                        share.descriptor.name
-                    );
-                }
-            }
-        }
-
+        },
+        Command::List => IpcCommand::ListShares,
         Command::Download {
             peer,
             share_id,
             output,
-            peer_id,
-            library_root,
-            resume,
+            resume: _,
             no_resume,
             parallel,
         } => {
-            if resume && no_resume {
-                anyhow::bail!("--resume and --no-resume cannot be used together");
-            }
-
-            let resume_enabled = !no_resume;
-
-            let library_root = library_root.unwrap_or_else(default_library_root);
-
-            println!("[peer] peer count: {}", peer.len());
-            for (index, peer_addr) in peer.iter().enumerate() {
-                println!("[peer] peer {}: {peer_addr}", index + 1);
-            }
-            if let Some(share_id) = share_id {
-                println!("[peer] requested share_id: {share_id}");
-            }
-            let auto_output = output.is_none();
-            let output = output.unwrap_or_else(|| temporary_download_output_path(&library_root));
-            create_output_parent_dir(&output)?;
-
-            if auto_output {
-                println!(
-                    "[peer] output path: automatic ({} / manifest file name)",
-                    default_download_output_dir(&library_root).display()
-                );
+            if no_resume {
+                IpcCommand::DownloadFresh {
+                    share_id,
+                    peers: peer,
+                    output,
+                    parallelism: parallel,
+                }
             } else {
-                println!("[peer] output path: {}", output.display());
+                IpcCommand::Download {
+                    share_id,
+                    peers: peer,
+                    output,
+                    parallelism: parallel,
+                }
             }
-            println!("[peer] library root: {}", library_root.display());
-            if resume_enabled {
-                println!("[peer] resume enabled");
-            } else {
-                println!("[peer] resume disabled: existing local chunks will be ignored");
-            }
-            if parallel > 1 {
-                println!("[peer] parallel workers: {parallel}");
-            }
-
-            let options = DownloadFileOptions::new(peer_id, log_level)
-                .with_library_root(library_root.clone())
-                .with_resume(resume_enabled)
-                .with_requested_share_id(share_id);
-
-            let manifest = if parallel > 1 {
-                download_file_from_peers_parallel_with_options(peer, &output, options, parallel)
-                    .await?
-            } else {
-                download_file_from_peers_with_options(peer, &output, options).await?
-            };
-
-            let final_output = if auto_output {
-                move_auto_download_output(&output, &library_root, &manifest.file_name)?
-            } else {
-                output.clone()
-            };
-
-            println!("[peer] transfer completed");
-            println!("[peer] output: {}", final_output.display());
-            println!("[peer] file: {}", manifest.file_name);
-            println!("[peer] file_id: {}", manifest.file_id);
-            println!("[peer] file size: {} bytes", manifest.file_size);
-            println!("[peer] chunks: {}", manifest.chunks.len());
         }
+        Command::Daemon { command } => match command {
+            DaemonCommand::Ping => IpcCommand::Ping,
+            DaemonCommand::List => IpcCommand::ListShares,
+            DaemonCommand::Shutdown => IpcCommand::Shutdown,
+        },
+    };
 
-        Command::ServeLibrary {
-            listen,
-            peer_id,
-            library_root,
-        } => {
-            let library_root = library_root.unwrap_or_else(default_library_root);
-
-            println!("[seeder] serving local library");
-            println!("[seeder] listen address: {listen}");
-            println!("[seeder] library root: {}", library_root.display());
-            println!("[seeder] peers must request a share_id with RequestShare");
-            println!("[seeder] serving continuously; press Ctrl+C to stop");
-
-            let listener = bind_listener(listen).await?;
-            serve_library_forever(
-                listener,
-                &library_root,
-                ServeFileOptions::new(peer_id, log_level),
-            )
-            .await?;
-        }
-
-        Command::Daemon {
-            ipc_socket,
-            library_root,
-            command,
-        } => {
-            let library_root = library_root.unwrap_or_else(default_library_root);
-            let socket_path = ipc_socket.unwrap_or_else(|| default_ipc_socket_path(&library_root));
-
-            if verbose {
-                println!("[daemon] ipc socket: {}", socket_path.display());
-            }
-
-            let command = match command {
-                DaemonCommand::Ping => IpcCommand::Ping,
-                DaemonCommand::List => IpcCommand::ListShares,
-                DaemonCommand::Shutdown => IpcCommand::Shutdown,
-            };
-
-            let response = send_ipc_command(&socket_path, command).await?;
-            print_ipc_response(response)?;
-        }
-
-        Command::Connect { peer, peer_id } => {
-            println!("[peer] connecting to {peer}");
-
-            let mut stream = connect_peer(peer).await?;
-            let remote_peer_id = client_hello_handshake(&mut stream, peer_id).await?;
-
-            println!("[peer] hello handshake completed with {remote_peer_id}");
-        }
-    }
+    let response = send_ipc_command(&socket_path, command).await?;
+    print_response(response)?;
 
     Ok(())
 }
 
 #[cfg(feature = "cli")]
-fn default_download_output_dir(library_root: &Path) -> PathBuf {
-    library_root.join(OUTPUT_DIR_NAME)
-}
-
-#[cfg(feature = "cli")]
-fn temporary_download_output_path(library_root: &Path) -> PathBuf {
-    default_download_output_dir(library_root)
-        .join(format!(".etle-download-{}.part", std::process::id()))
-}
-
-#[cfg(feature = "cli")]
-fn move_auto_download_output(
-    temporary_output: &Path,
-    library_root: &Path,
-    manifest_file_name: &str,
-) -> anyhow::Result<PathBuf> {
-    let final_output = unique_output_path(default_download_output_path(
-        library_root,
-        manifest_file_name,
-    ));
-    create_output_parent_dir(&final_output)?;
-    fs::rename(temporary_output, &final_output)?;
-
-    Ok(final_output)
-}
-
-#[cfg(feature = "cli")]
-fn default_download_output_path(library_root: &Path, manifest_file_name: &str) -> PathBuf {
-    default_download_output_dir(library_root).join(safe_output_file_name(manifest_file_name))
-}
-
-#[cfg(feature = "cli")]
-fn safe_output_file_name(file_name: &str) -> String {
-    Path::new(file_name)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "downloaded-file".to_string())
-}
-
-#[cfg(feature = "cli")]
-fn create_output_parent_dir(path: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+fn print_shares(shares: Vec<IpcShareSummary>) {
+    if shares.is_empty() {
+        println!("[library] no shares found");
+        return;
     }
 
-    Ok(())
+    for share in shares {
+        print_share(&share);
+    }
 }
 
 #[cfg(feature = "cli")]
-fn unique_output_path(path: PathBuf) -> PathBuf {
-    if !path.exists() {
-        return path;
-    }
+fn print_share(share: &IpcShareSummary) {
+    let mode = share.mode.as_deref().unwrap_or("unknown");
+    let secret = if share.has_secret {
+        "key=yes"
+    } else {
+        "key=no"
+    };
 
-    let parent = path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let stem = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "downloaded-file".to_string());
-    let extension = path
-        .extension()
-        .map(|extension| extension.to_string_lossy().into_owned());
-
-    for copy_index in 1_u32.. {
-        let file_name = match &extension {
-            Some(extension) => format!("{stem} ({copy_index}).{extension}"),
-            None => format!("{stem} ({copy_index})"),
-        };
-        let candidate = parent.join(file_name);
-
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-
-    unreachable!("unbounded copy index loop must return before overflowing")
+    println!(
+        "[library] {}  {mode}  chunks={}/{}  {secret}  name=\"{}\"",
+        share.share_id, share.completed_chunks, share.total_chunks, share.name
+    );
 }
 
 #[cfg(feature = "cli")]
-fn print_ipc_response(response: IpcResponse) -> anyhow::Result<()> {
+fn print_response(response: IpcResponse) -> anyhow::Result<()> {
     match response {
         IpcResponse::Pong => println!("[daemon] pong"),
         IpcResponse::Ack { message } => println!("[daemon] {message}"),
-        IpcResponse::Shares { shares } => print_ipc_shares(shares),
+        IpcResponse::Shares { shares } => print_shares(shares),
+        IpcResponse::ShareAdded { share } => {
+            println!("[daemon] share added");
+            print_share(&share);
+        }
         IpcResponse::TransferQueued { share_id } => {
             println!("[daemon] transfer queued: {share_id}");
+        }
+        IpcResponse::TransferCompleted {
+            share_id,
+            output,
+            file_name,
+            file_size,
+            chunks,
+        } => {
+            println!("[daemon] transfer completed");
+            println!("[daemon] share_id: {share_id}");
+            println!("[daemon] output: {}", output.display());
+            println!("[daemon] file: {file_name}");
+            println!("[daemon] file size: {file_size} bytes");
+            println!("[daemon] chunks: {chunks}");
         }
         IpcResponse::Error { message } => anyhow::bail!(message),
     }
 
     Ok(())
-}
-
-#[cfg(feature = "cli")]
-fn print_ipc_shares(shares: Vec<IpcShareSummary>) {
-    if shares.is_empty() {
-        println!("[daemon] no shares found");
-        return;
-    }
-
-    for share in shares {
-        let mode = share.mode.as_deref().unwrap_or("unknown");
-        let secret = if share.has_secret {
-            "key=yes"
-        } else {
-            "key=no"
-        };
-        println!(
-            "[daemon] {}  {mode}  chunks={}/{}  {secret}  name=\"{}\"",
-            share.share_id, share.completed_chunks, share.total_chunks, share.name
-        );
-    }
-}
-
-#[cfg(feature = "cli")]
-fn format_share_mode(mode: Option<ShareMode>) -> &'static str {
-    match mode {
-        Some(ShareMode::Seeding) => "seeding",
-        Some(ShareMode::Downloading) => "downloading",
-        Some(ShareMode::Completed) => "completed",
-        Some(ShareMode::Paused) => "paused",
-        None => "unknown",
-    }
 }
 
 #[cfg(not(feature = "cli"))]
