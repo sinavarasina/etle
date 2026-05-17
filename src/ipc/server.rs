@@ -45,6 +45,8 @@ pub async fn serve_ipc_forever(
     _socket_path: impl AsRef<Path>,
     _library_root: impl AsRef<Path>,
 ) -> Result<(), IpcError> {
+    let _ = _socket_path;
+    let _ = _library_root;
     Err(IpcError::UnsupportedPlatform(
         "local daemon IPC currently uses Unix sockets; Windows named pipes will be added later",
     ))
@@ -95,33 +97,52 @@ pub fn handle_ipc_command(command: IpcCommand, library_root: &Path) -> IpcRespon
 pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) -> IpcResponse {
     match command {
         IpcCommand::SeedFile { input, chunk_size } => {
-            handle_seed_file_command(input, chunk_size, library_root).await
+            queue_seed_file_command(input, chunk_size, library_root)
         }
         IpcCommand::Download {
             share_id,
             peers,
             output,
             parallelism,
-        } => {
-            handle_download_command(share_id, peers, output, parallelism, true, library_root).await
-        }
+        } => queue_download_command(share_id, peers, output, parallelism, true, library_root),
         IpcCommand::DownloadFresh {
             share_id,
             peers,
             output,
             parallelism,
-        } => {
-            handle_download_command(share_id, peers, output, parallelism, false, library_root).await
-        }
+        } => queue_download_command(share_id, peers, output, parallelism, false, library_root),
         command => handle_ipc_command(command, library_root),
     }
 }
 
-async fn handle_seed_file_command(
-    input: PathBuf,
-    chunk_size: usize,
-    library_root: &Path,
-) -> IpcResponse {
+fn queue_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Path) -> IpcResponse {
+    let input_label = input.display().to_string();
+    let library_root = library_root.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        match run_seed_file_command(input, chunk_size, &library_root) {
+            IpcResponse::ShareAdded { share } => {
+                println!("[daemon] seed job completed");
+                println!(
+                    "[daemon] share {}  chunks={}/{}  key={}  name=\"{}\"",
+                    share.share_id,
+                    share.completed_chunks,
+                    share.total_chunks,
+                    if share.has_secret { "yes" } else { "no" },
+                    share.name
+                );
+            }
+            IpcResponse::Error { message } => eprintln!("[daemon] seed job failed: {message}"),
+            other => println!("[daemon] seed job finished: {other:?}"),
+        }
+    });
+
+    IpcResponse::Ack {
+        message: format!("seed job queued: {input_label}"),
+    }
+}
+
+fn run_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Path) -> IpcResponse {
     let chunk_size = if chunk_size == 0 {
         DEFAULT_CHUNK_SIZE
     } else {
@@ -143,6 +164,41 @@ async fn handle_seed_file_command(
             message: error.to_string(),
         },
     }
+}
+
+fn queue_download_command(
+    share_id: ShareId,
+    peers: Vec<SocketAddr>,
+    output: Option<PathBuf>,
+    parallelism: usize,
+    resume: bool,
+    library_root: &Path,
+) -> IpcResponse {
+    let library_root = library_root.to_path_buf();
+
+    tokio::spawn(async move {
+        match handle_download_command(share_id, peers, output, parallelism, resume, &library_root)
+            .await
+        {
+            IpcResponse::TransferCompleted {
+                output,
+                file_name,
+                file_size,
+                chunks,
+                ..
+            } => {
+                println!("[daemon] download job completed: {share_id}");
+                println!("[daemon] output: {}", output.display());
+                println!("[daemon] file: {file_name}");
+                println!("[daemon] file size: {file_size} bytes");
+                println!("[daemon] chunks: {chunks}");
+            }
+            IpcResponse::Error { message } => eprintln!("[daemon] download job failed: {message}"),
+            other => println!("[daemon] download job finished: {other:?}"),
+        }
+    });
+
+    IpcResponse::TransferQueued { share_id }
 }
 
 async fn handle_download_command(

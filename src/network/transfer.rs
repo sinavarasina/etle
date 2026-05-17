@@ -1,17 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    io::ErrorKind,
+    fs::{self, File},
+    io::{ErrorKind, Read},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
     crypto::{
-        aead::SymmetricKey,
-        hash::hash_chunk,
+        aead::{SymmetricKey, build_chunk_aad, encrypt_chunk, generate_nonce},
+        hash::{hash_chunk, hash_file},
         key_exchange::derive_session_key,
         key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
     },
@@ -117,6 +119,8 @@ impl DownloadFileOptions {
     }
 }
 
+const STAGING_DIR_NAME: &str = "staging";
+
 pub fn add_file_to_library(
     input_path: impl AsRef<Path>,
     chunk_size: usize,
@@ -131,18 +135,163 @@ pub fn add_file_to_library(
     }
 
     let file_key = generate_file_key();
-    let encrypted = encrypt_file(input_path, &file_key, chunk_size)?;
-    let descriptor = descriptor_from_manifest(&encrypted.manifest);
-
-    persist_seed_library_state(
-        Some(library_root.as_ref()),
-        &encrypted.manifest,
+    add_file_to_library_streaming(
+        input_path,
         file_key,
-        &encrypted.chunks,
+        chunk_size,
+        library_root.as_ref(),
         log_level,
+    )
+}
+
+fn add_file_to_library_streaming(
+    input_path: &Path,
+    file_key: SymmetricKey,
+    chunk_size: usize,
+    library_root: &Path,
+    log_level: TransferLogLevel,
+) -> Result<EtleDescriptor, NetworkError> {
+    if chunk_size == 0 {
+        return Err(FileError::InvalidChunkSize(chunk_size).into());
+    }
+
+    let file_id = hash_file(input_path)?;
+    let file_size = fs::metadata(input_path)?.len();
+    let file_name = manifest_file_name(input_path);
+    let staging = StagedChunkDir::create(library_root)?;
+    let mut input = File::open(input_path)?;
+    let mut buffer = vec![0_u8; chunk_size];
+    let mut chunk_metas = Vec::new();
+    let mut index = 0_u32;
+
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        let nonce = generate_nonce();
+        let aad = build_chunk_aad(file_id, index, read as u64);
+        let ciphertext = encrypt_chunk(&file_key, nonce, &buffer[..read], &aad)?;
+        let encrypted_hash = hash_chunk(&ciphertext);
+        let encrypted_size = ciphertext.len() as u64;
+
+        staging.write_chunk(index, &ciphertext)?;
+        chunk_metas.push(ChunkMeta {
+            index,
+            plain_size: read as u64,
+            encrypted_size,
+            nonce,
+            blake3_hash: encrypted_hash,
+        });
+
+        if log_level.is_verbose() {
+            println!(
+                "[daemon] encrypted staged chunk {} (plain={} bytes, encrypted={} bytes)",
+                index, read, encrypted_size
+            );
+        }
+
+        index = index.saturating_add(1);
+    }
+
+    let manifest = Manifest {
+        file_id,
+        file_name,
+        file_size,
+        chunk_size: chunk_size as u64,
+        chunks: chunk_metas,
+    };
+    let descriptor = descriptor_from_manifest(&manifest);
+    let paths = initialize_share_library(
+        library_root,
+        &descriptor,
+        file_key,
+        ShareMode::Seeding,
+        None,
     )?;
 
+    for meta in &manifest.chunks {
+        staging.move_chunk(meta.index, &paths.chunk_path(meta.index))?;
+    }
+
+    if log_level.is_normal() {
+        println!(
+            "[daemon] seed state stored: {}",
+            paths.share_dir().display()
+        );
+    }
+
     Ok(descriptor)
+}
+
+struct StagedChunkDir {
+    path: PathBuf,
+}
+
+impl StagedChunkDir {
+    fn create(library_root: &Path) -> Result<Self, std::io::Error> {
+        let base = library_root
+            .join(crate::state::ETLE_DIR_NAME)
+            .join(STAGING_DIR_NAME);
+        fs::create_dir_all(&base)?;
+
+        for attempt in 0_u32.. {
+            let candidate = base.join(format!(
+                "seed-{}-{}-{attempt}",
+                std::process::id(),
+                staging_timestamp()
+            ));
+
+            match fs::create_dir(&candidate) {
+                Ok(()) => return Ok(Self { path: candidate }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        unreachable!("unbounded staging directory loop must return before overflowing")
+    }
+
+    fn chunk_path(&self, index: u32) -> PathBuf {
+        self.path
+            .join(format!("{index:06}.{}", crate::state::CHUNK_EXTENSION))
+    }
+
+    fn write_chunk(&self, index: u32, data: &[u8]) -> Result<(), std::io::Error> {
+        fs::write(self.chunk_path(index), data)
+    }
+
+    fn move_chunk(&self, index: u32, destination: &Path) -> Result<(), std::io::Error> {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        if destination.exists() {
+            fs::remove_file(destination)?;
+        }
+
+        fs::rename(self.chunk_path(index), destination)
+    }
+}
+
+impl Drop for StagedChunkDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn staging_timestamp() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos())
+}
+
+fn manifest_file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unnamed".to_string())
 }
 
 pub async fn serve_file_to_one_peer(
