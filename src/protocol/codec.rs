@@ -12,7 +12,7 @@ pub async fn send_message<W>(writer: &mut W, message: &WireMessage) -> Result<()
 where
     W: AsyncWrite + Unpin,
 {
-    let payload = bincode::serialize(message)?;
+    let payload = bincode::serde::encode_to_vec(message, bincode::config::standard())?;
     validate_frame_len(payload.len())?;
 
     writer
@@ -37,7 +37,17 @@ where
     let mut payload = vec![0_u8; len];
     reader.read_exact(&mut payload).await?;
 
-    Ok(bincode::deserialize(&payload)?)
+    let (message, bytes_read): (WireMessage, usize) =
+        bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
+
+    if bytes_read != payload.len() {
+        return Err(ProtocolError::TrailingBytes {
+            bytes_read,
+            frame_len: payload.len(),
+        });
+    }
+
+    Ok(message)
 }
 
 fn validate_frame_len(len: usize) -> Result<(), ProtocolError> {

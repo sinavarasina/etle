@@ -8,8 +8,11 @@ pub enum FileError {
     #[error("crypto error: {0}")]
     Crypto(#[from] crate::crypto::error::CryptoError),
 
-    #[error("serialization error: {0}")]
-    Serialize(#[from] Box<bincode::ErrorKind>),
+    #[error("serialization encode error: {0}")]
+    Encode(#[from] bincode::error::EncodeError),
+
+    #[error("serialization decode error: {0}")]
+    Decode(#[from] bincode::error::DecodeError),
 
     #[error("invalid chunk size: {0}")]
     InvalidChunkSize(usize),

@@ -24,12 +24,15 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
-        bincode::serialize(self)
+    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode::error::EncodeError> {
+        bincode::serde::encode_to_vec(self, bincode::config::standard())
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<bincode::ErrorKind>> {
-        bincode::deserialize(bytes)
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
+        let (manifest, _bytes_read): (Self, usize) =
+            bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+        Ok(manifest)
     }
 }
 

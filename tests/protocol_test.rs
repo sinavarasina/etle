@@ -27,8 +27,11 @@ fn sample_manifest() -> Manifest {
 }
 
 fn assert_bincode_roundtrip(message: WireMessage) {
-    let encoded = bincode::serialize(&message).unwrap();
-    let decoded: WireMessage = bincode::deserialize(&encoded).unwrap();
+    let encoded = bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+    let (decoded, bytes_read): (WireMessage, usize) =
+        bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+
+    assert_eq!(bytes_read, encoded.len());
 
     assert_eq!(decoded, message);
 }
