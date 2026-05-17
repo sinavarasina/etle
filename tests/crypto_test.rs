@@ -1,7 +1,7 @@
 use etle::crypto::{
-    aead::{build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce, SymmetricKey},
-    hash::{hash_bytes, FileId},
-    key_exchange::{derive_file_key, EphemeralKeypair},
+    aead::{SymmetricKey, build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce},
+    hash::{FileId, hash_bytes},
+    key_exchange::{EphemeralKeypair, derive_file_key},
 };
 
 #[test]

@@ -21,7 +21,11 @@ pub enum FileError {
     ChunkHashMismatch(u32),
 
     #[error("chunk size mismatch at index {index}: expected {expected} bytes, got {actual} bytes")]
-    ChunkSizeMismatch { index: u32, expected: u64, actual: u64 },
+    ChunkSizeMismatch {
+        index: u32,
+        expected: u64,
+        actual: u64,
+    },
 
     #[error("final file hash mismatch")]
     FinalHashMismatch,

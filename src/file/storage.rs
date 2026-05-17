@@ -6,11 +6,11 @@ use std::{
 
 use crate::{
     crypto::{
-        aead::{build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce, SymmetricKey},
-        hash::{hash_chunk, hash_file, FileId},
+        aead::{SymmetricKey, build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce},
+        hash::{FileId, hash_chunk, hash_file},
     },
     file::{
-        chunker::{join_chunks, read_file_chunks, PlainChunk},
+        chunker::{PlainChunk, join_chunks, read_file_chunks},
         error::FileError,
         manifest::{ChunkMeta, Manifest},
     },
@@ -81,7 +81,10 @@ pub fn encrypt_file(
     })
 }
 
-pub fn decrypt_to_bytes(encrypted: &EncryptedFile, key: &SymmetricKey) -> Result<Vec<u8>, FileError> {
+pub fn decrypt_to_bytes(
+    encrypted: &EncryptedFile,
+    key: &SymmetricKey,
+) -> Result<Vec<u8>, FileError> {
     let mut plain_chunks = Vec::with_capacity(encrypted.manifest.chunks.len());
 
     for meta in &encrypted.manifest.chunks {

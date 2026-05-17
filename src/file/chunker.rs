@@ -31,7 +31,10 @@ pub fn read_file_chunks(
         }
 
         buffer.truncate(read);
-        chunks.push(PlainChunk { index, data: buffer });
+        chunks.push(PlainChunk {
+            index,
+            data: buffer,
+        });
         index = index.saturating_add(1);
     }
 

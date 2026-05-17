@@ -3,7 +3,7 @@ use std::{fs, path::PathBuf};
 use etle::{
     crypto::{
         hash::hash_file,
-        key_exchange::{derive_file_key, EphemeralKeypair},
+        key_exchange::{EphemeralKeypair, derive_file_key},
     },
     file::storage::{decrypt_to_bytes, encrypt_file},
 };

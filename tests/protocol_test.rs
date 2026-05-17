@@ -7,7 +7,7 @@ use etle::{
         key_exchange::PublicKeyBytes,
     },
     file::manifest::{ChunkMeta, Manifest},
-    protocol::{receive_message, send_message, ProtocolError, WireMessage, MAX_FRAME_SIZE},
+    protocol::{MAX_FRAME_SIZE, ProtocolError, WireMessage, receive_message, send_message},
 };
 
 fn sample_manifest() -> Manifest {

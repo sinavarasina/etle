@@ -15,7 +15,9 @@ where
     let payload = bincode::serialize(message)?;
     validate_frame_len(payload.len())?;
 
-    writer.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+    writer
+        .write_all(&(payload.len() as u32).to_be_bytes())
+        .await?;
     writer.write_all(&payload).await?;
     writer.flush().await?;
 

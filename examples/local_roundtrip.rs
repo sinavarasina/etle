@@ -1,7 +1,7 @@
 use etle::{
     crypto::{
         hash::hash_file,
-        key_exchange::{derive_file_key, EphemeralKeypair},
+        key_exchange::{EphemeralKeypair, derive_file_key},
     },
     file::{
         chunker::DEFAULT_CHUNK_SIZE,

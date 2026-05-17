@@ -1,11 +1,7 @@
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-use crate::crypto::{
-    aead::SymmetricKey,
-    error::CryptoError,
-    hash::FileId,
-};
+use crate::crypto::{aead::SymmetricKey, error::CryptoError, hash::FileId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicKeyBytes(pub [u8; 32]);

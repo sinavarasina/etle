@@ -3,13 +3,16 @@ use std::{fs, path::PathBuf};
 use etle::{
     crypto::aead::SymmetricKey,
     file::storage::{
-        debug_chunk_path, debug_manifest_path, decrypt_to_bytes, encrypt_file, read_debug_workspace,
-        write_debug_workspace,
+        debug_chunk_path, debug_manifest_path, decrypt_to_bytes, encrypt_file,
+        read_debug_workspace, write_debug_workspace,
     },
 };
 
 fn temp_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("etle-debug-workspace-{name}-{}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "etle-debug-workspace-{name}-{}",
+        std::process::id()
+    ))
 }
 
 #[test]
