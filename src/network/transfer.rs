@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::Path};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use tokio::net::TcpListener;
 
@@ -9,6 +13,7 @@ use crate::{
         key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
     },
     file::{
+        descriptor::{EtleDescriptor, FileEntry},
         error::FileError,
         manifest::Manifest,
         storage::{EncryptedChunk, EncryptedFile, decrypt_to_file, encrypt_file},
@@ -18,6 +23,10 @@ use crate::{
         connect_peer, server_hello_handshake, server_shared_secret_exchange,
     },
     protocol::{WireMessage, receive_message, send_message},
+    state::{
+        DownloadProgress, LibraryPaths, ShareMode, ShareState, initialize_share_library,
+        write_encrypted_chunk, write_progress, write_state,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,6 +53,7 @@ impl TransferLogLevel {
 pub struct ServeFileOptions {
     pub seeder_id: String,
     pub log_level: TransferLogLevel,
+    pub library_root: Option<PathBuf>,
 }
 
 impl ServeFileOptions {
@@ -52,7 +62,14 @@ impl ServeFileOptions {
         Self {
             seeder_id: seeder_id.into(),
             log_level,
+            library_root: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_library_root(mut self, library_root: impl Into<PathBuf>) -> Self {
+        self.library_root = Some(library_root.into());
+        self
     }
 }
 
@@ -60,6 +77,7 @@ impl ServeFileOptions {
 pub struct DownloadFileOptions {
     pub peer_id: String,
     pub log_level: TransferLogLevel,
+    pub library_root: Option<PathBuf>,
 }
 
 impl DownloadFileOptions {
@@ -68,7 +86,14 @@ impl DownloadFileOptions {
         Self {
             peer_id: peer_id.into(),
             log_level,
+            library_root: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_library_root(mut self, library_root: impl Into<PathBuf>) -> Self {
+        self.library_root = Some(library_root.into());
+        self
     }
 }
 
@@ -96,6 +121,7 @@ pub async fn serve_file_to_one_peer_with_options(
     let ServeFileOptions {
         seeder_id,
         log_level,
+        library_root,
     } = options;
     let input_path = input_path.as_ref();
     let (mut stream, peer_addr) = accept_peer(&listener).await?;
@@ -124,6 +150,14 @@ pub async fn serve_file_to_one_peer_with_options(
     let file_key = generate_file_key();
     let encrypted = encrypt_file(input_path, &file_key, chunk_size)?;
     let total_chunks = encrypted.manifest.chunks.len();
+
+    persist_seed_library_state(
+        library_root.as_deref(),
+        &encrypted.manifest,
+        file_key,
+        &encrypted.chunks,
+        log_level,
+    )?;
 
     if log_level.is_normal() {
         println!(
@@ -228,7 +262,11 @@ pub async fn download_file_from_peer_with_options(
     output_path: impl AsRef<Path>,
     options: DownloadFileOptions,
 ) -> Result<Manifest, NetworkError> {
-    let DownloadFileOptions { peer_id, log_level } = options;
+    let DownloadFileOptions {
+        peer_id,
+        log_level,
+        library_root,
+    } = options;
     let output_path = output_path.as_ref();
     let mut stream = connect_peer(peer_addr).await?;
 
@@ -286,6 +324,16 @@ pub async fn download_file_from_peer_with_options(
         println!("[peer] wrapped file key received and unlocked");
     }
 
+    let descriptor = descriptor_from_manifest(&manifest);
+    let output_state_dir = output_parent_dir(output_path);
+    let mut library_state = initialize_download_library_state(
+        library_root.as_deref(),
+        &descriptor,
+        file_key,
+        output_state_dir.clone(),
+        log_level,
+    )?;
+
     let mut chunks = BTreeMap::new();
 
     for (position, meta) in manifest.chunks.iter().enumerate() {
@@ -314,7 +362,14 @@ pub async fn download_file_from_peer_with_options(
                     println!("[peer] chunk {} hash verified: {}", meta.index, actual_hash);
                 }
 
-                chunks.insert(index, EncryptedChunk { index, data });
+                let encrypted_chunk = EncryptedChunk { index, data };
+                persist_downloaded_chunk(
+                    &mut library_state,
+                    &encrypted_chunk,
+                    output_state_dir.clone(),
+                )?;
+
+                chunks.insert(index, encrypted_chunk);
                 log_chunk_progress(
                     "peer",
                     "received+verified",
@@ -344,6 +399,7 @@ pub async fn download_file_from_peer_with_options(
     };
 
     decrypt_to_file(&encrypted, &file_key, output_path)?;
+    mark_download_library_complete(&library_state, output_state_dir)?;
 
     if log_level.is_normal() {
         println!("[peer] final hash verified: {}", manifest.file_id);
@@ -351,6 +407,127 @@ pub async fn download_file_from_peer_with_options(
     }
 
     Ok(manifest)
+}
+
+fn descriptor_from_manifest(manifest: &Manifest) -> EtleDescriptor {
+    EtleDescriptor::new(
+        manifest.file_name.clone(),
+        manifest.file_size,
+        manifest.chunk_size,
+        vec![FileEntry {
+            path: manifest.file_name.clone(),
+            size: manifest.file_size,
+            offset: 0,
+            blake3_hash: manifest.file_id,
+        }],
+        manifest.chunks.clone(),
+    )
+}
+
+fn persist_seed_library_state(
+    library_root: Option<&Path>,
+    manifest: &Manifest,
+    file_key: crate::crypto::aead::SymmetricKey,
+    chunks: &BTreeMap<u32, EncryptedChunk>,
+    log_level: TransferLogLevel,
+) -> Result<(), NetworkError> {
+    let Some(root) = library_root else {
+        return Ok(());
+    };
+
+    let descriptor = descriptor_from_manifest(manifest);
+    let paths = initialize_share_library(root, &descriptor, file_key, ShareMode::Seeding, None)?;
+
+    for chunk in chunks.values() {
+        write_encrypted_chunk(&paths, chunk)?;
+    }
+
+    if log_level.is_normal() {
+        println!(
+            "[seeder] seed state stored: {}",
+            paths.share_dir().display()
+        );
+    }
+
+    Ok(())
+}
+
+struct ActiveDownloadLibraryState {
+    paths: LibraryPaths,
+    progress: DownloadProgress,
+}
+
+fn initialize_download_library_state(
+    library_root: Option<&Path>,
+    descriptor: &EtleDescriptor,
+    file_key: crate::crypto::aead::SymmetricKey,
+    output_dir: Option<PathBuf>,
+    log_level: TransferLogLevel,
+) -> Result<Option<ActiveDownloadLibraryState>, NetworkError> {
+    let Some(root) = library_root else {
+        return Ok(None);
+    };
+
+    let paths = initialize_share_library(
+        root,
+        descriptor,
+        file_key,
+        ShareMode::Downloading,
+        output_dir,
+    )?;
+    let progress = DownloadProgress::empty(descriptor.share_id);
+
+    if log_level.is_normal() {
+        println!(
+            "[peer] download state initialized: {}",
+            paths.share_dir().display()
+        );
+    }
+
+    Ok(Some(ActiveDownloadLibraryState { paths, progress }))
+}
+
+fn persist_downloaded_chunk(
+    state: &mut Option<ActiveDownloadLibraryState>,
+    chunk: &EncryptedChunk,
+    output_dir: Option<PathBuf>,
+) -> Result<(), NetworkError> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+
+    write_encrypted_chunk(&state.paths, chunk)?;
+    state.progress.mark_completed(chunk.index);
+    write_progress(&state.paths, &state.progress)?;
+    write_state(
+        &state.paths,
+        &ShareState::from_progress(ShareMode::Downloading, output_dir, &state.progress),
+    )?;
+
+    Ok(())
+}
+
+fn mark_download_library_complete(
+    state: &Option<ActiveDownloadLibraryState>,
+    output_dir: Option<PathBuf>,
+) -> Result<(), NetworkError> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+
+    write_state(
+        &state.paths,
+        &ShareState::from_progress(ShareMode::Completed, output_dir, &state.progress),
+    )?;
+
+    Ok(())
+}
+
+fn output_parent_dir(output_path: &Path) -> Option<PathBuf> {
+    output_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 fn log_chunk_progress(

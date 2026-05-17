@@ -49,6 +49,10 @@ enum Command {
         /// Local peer identifier sent during hello handshake.
         #[arg(long, default_value = "etle-seeder")]
         peer_id: String,
+
+        /// Root directory for the local .etle library state.
+        #[arg(long, default_value = ".")]
+        library_root: PathBuf,
     },
 
     /// Download a file from one seeder peer.
@@ -64,6 +68,10 @@ enum Command {
         /// Local peer identifier sent during hello handshake.
         #[arg(long, default_value = "etle-peer")]
         peer_id: String,
+
+        /// Root directory for the local .etle library state.
+        #[arg(long, default_value = ".")]
+        library_root: PathBuf,
     },
 
     /// Perform a basic TCP + hello handshake probe.
@@ -94,10 +102,12 @@ async fn main() -> anyhow::Result<()> {
             listen,
             chunk_size,
             peer_id,
+            library_root,
         } => {
             println!("[seeder] loading file: {}", file.display());
             println!("[seeder] listen address: {listen}");
             println!("[seeder] chunk size: {chunk_size} bytes");
+            println!("[seeder] library root: {}", library_root.display());
             println!("[seeder] waiting for one peer...");
 
             let listener = bind_listener(listen).await?;
@@ -105,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
                 listener,
                 &file,
                 chunk_size,
-                ServeFileOptions::new(peer_id, log_level),
+                ServeFileOptions::new(peer_id, log_level).with_library_root(library_root),
             )
             .await?;
 
@@ -116,14 +126,16 @@ async fn main() -> anyhow::Result<()> {
             peer,
             output,
             peer_id,
+            library_root,
         } => {
             println!("[peer] connecting to {peer}");
             println!("[peer] output path: {}", output.display());
+            println!("[peer] library root: {}", library_root.display());
 
             let manifest = download_file_from_peer_with_options(
                 peer,
                 &output,
-                DownloadFileOptions::new(peer_id, log_level),
+                DownloadFileOptions::new(peer_id, log_level).with_library_root(library_root),
             )
             .await?;
 
