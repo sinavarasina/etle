@@ -34,4 +34,12 @@ pub enum NetworkError {
 
     #[error("state seeding currently supports exactly one file entry, got {0}")]
     UnsupportedMultiFileDescriptor(usize),
+
+    #[error("at least one peer address is required")]
+    NoPeersProvided,
+
+    #[error(
+        "all peer download attempts failed after {attempts} attempt(s); last error: {last_error}"
+    )]
+    AllPeersFailed { attempts: usize, last_error: String },
 }

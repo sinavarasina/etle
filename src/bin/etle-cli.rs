@@ -9,7 +9,7 @@ use etle::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     network::{
         DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        client_hello_handshake, connect_peer, download_file_from_peer_with_options,
+        client_hello_handshake, connect_peer, download_file_from_peers_with_options,
         serve_file_to_one_peer_with_options, serve_library_share_to_one_peer,
     },
     state::{ShareMode, list_library_shares},
@@ -81,11 +81,11 @@ enum Command {
         library_root: PathBuf,
     },
 
-    /// Download a file from one seeder peer.
+    /// Download a file from one or more seeder peers.
     Download {
-        /// Seeder peer address.
-        #[arg(long)]
-        peer: SocketAddr,
+        /// Seeder peer address. Can be repeated for sequential fallback.
+        #[arg(long, required = true)]
+        peer: Vec<SocketAddr>,
 
         /// Output file path.
         #[arg(long)]
@@ -210,14 +210,17 @@ async fn main() -> anyhow::Result<()> {
             library_root,
             resume,
         } => {
-            println!("[peer] connecting to {peer}");
+            println!("[peer] peer count: {}", peer.len());
+            for (index, peer_addr) in peer.iter().enumerate() {
+                println!("[peer] peer {}: {peer_addr}", index + 1);
+            }
             println!("[peer] output path: {}", output.display());
             println!("[peer] library root: {}", library_root.display());
-            if resume {
+            if resume || peer.len() > 1 {
                 println!("[peer] resume enabled");
             }
 
-            let manifest = download_file_from_peer_with_options(
+            let manifest = download_file_from_peers_with_options(
                 peer,
                 &output,
                 DownloadFileOptions::new(peer_id, log_level)

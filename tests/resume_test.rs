@@ -64,7 +64,10 @@ async fn download_can_resume_from_existing_verified_chunks() {
     .unwrap();
     original_server.await.unwrap();
 
-    assert_eq!(hash_file(&input).unwrap(), hash_file(&first_output).unwrap());
+    assert_eq!(
+        hash_file(&input).unwrap(),
+        hash_file(&first_output).unwrap()
+    );
     assert!(manifest.chunks.len() > 1);
 
     let shares = list_library_shares(&peer_root).unwrap();
@@ -111,7 +114,10 @@ async fn download_can_resume_from_existing_verified_chunks() {
     .unwrap();
     state_server.await.unwrap();
 
-    assert_eq!(hash_file(&input).unwrap(), hash_file(&resumed_output).unwrap());
+    assert_eq!(
+        hash_file(&input).unwrap(),
+        hash_file(&resumed_output).unwrap()
+    );
     assert_eq!(
         read_progress(&peer_paths).unwrap().completed_chunks.len(),
         manifest.chunks.len()

@@ -402,6 +402,53 @@ pub async fn download_file_from_peer(
     .await
 }
 
+pub async fn download_file_from_peers_with_options(
+    peer_addrs: impl IntoIterator<Item = SocketAddr>,
+    output_path: impl AsRef<Path>,
+    options: DownloadFileOptions,
+) -> Result<Manifest, NetworkError> {
+    let peer_addrs = peer_addrs.into_iter().collect::<Vec<_>>();
+    if peer_addrs.is_empty() {
+        return Err(NetworkError::NoPeersProvided);
+    }
+
+    let output_path = output_path.as_ref();
+    let total_peers = peer_addrs.len();
+    let mut last_error = None;
+
+    for (attempt, peer_addr) in peer_addrs.into_iter().enumerate() {
+        let attempt_number = attempt + 1;
+        let mut attempt_options = options.clone();
+
+        // Multi-peer fallback relies on persisted encrypted chunks between
+        // attempts. Even if the user did not explicitly pass --resume, force
+        // resume after the first peer so chunks fetched from a failed/partial
+        // peer can be reused by the next peer.
+        if total_peers > 1 || attempt > 0 {
+            attempt_options = attempt_options.with_resume(true);
+        }
+
+        if attempt_options.log_level.is_normal() && total_peers > 1 {
+            println!("[peer] trying peer {attempt_number}/{total_peers}: {peer_addr}");
+        }
+
+        match download_file_from_peer_with_options(peer_addr, output_path, attempt_options).await {
+            Ok(manifest) => return Ok(manifest),
+            Err(error) => {
+                if options.log_level.is_normal() {
+                    println!("[peer] peer {attempt_number}/{total_peers} failed: {error}");
+                }
+                last_error = Some(error.to_string());
+            }
+        }
+    }
+
+    Err(NetworkError::AllPeersFailed {
+        attempts: total_peers,
+        last_error: last_error.unwrap_or_else(|| "unknown error".to_string()),
+    })
+}
+
 pub async fn download_file_from_peer_with_options(
     peer_addr: SocketAddr,
     output_path: impl AsRef<Path>,
