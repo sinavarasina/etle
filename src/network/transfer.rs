@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
-    io::{ErrorKind, Read},
+    io::{ErrorKind, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -12,8 +12,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::{
     crypto::{
-        aead::{SymmetricKey, build_chunk_aad, encrypt_chunk, generate_nonce},
-        hash::{hash_chunk, hash_file},
+        aead::{SymmetricKey, build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce},
+        hash::{FileId, hash_chunk, hash_file},
         key_exchange::derive_session_key,
         key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
     },
@@ -1066,7 +1066,13 @@ pub async fn download_file_from_peers_parallel_with_options(
         options.log_level,
     )?;
 
-    let existing_chunks = load_resumable_chunks(
+    if library_state.is_none() {
+        return Err(NetworkError::PeerError(
+            "parallel streaming download requires a library root".to_string(),
+        ));
+    }
+
+    let completed_chunks = load_resumable_chunk_indexes(
         &mut library_state,
         &manifest,
         output_state_dir.clone(),
@@ -1076,7 +1082,7 @@ pub async fn download_file_from_peers_parallel_with_options(
     let missing_chunks = manifest
         .chunks
         .iter()
-        .filter(|meta| !existing_chunks.contains_key(&meta.index))
+        .filter(|meta| !completed_chunks.contains(&meta.index))
         .map(|meta| meta.index)
         .collect::<VecDeque<_>>();
 
@@ -1086,25 +1092,22 @@ pub async fn download_file_from_peers_parallel_with_options(
             println!("[peer] decrypting and reconstructing file...");
         }
 
-        let encrypted = EncryptedFile {
-            manifest: manifest.clone(),
-            chunks: existing_chunks,
-        };
-        decrypt_to_file(&encrypted, &file_key, output_path)?;
+        let active_state = active_download_state(&library_state)?;
+        decrypt_library_chunks_to_file(&active_state.paths, &manifest, &file_key, output_path)?;
         mark_download_library_complete(&library_state, output_state_dir)?;
         return Ok(manifest);
     }
 
     let total_chunks = manifest.chunks.len();
     let queue = Arc::new(Mutex::new(missing_chunks));
-    let chunks = Arc::new(Mutex::new(existing_chunks));
+    let completed_chunks = Arc::new(Mutex::new(completed_chunks));
     let state = Arc::new(Mutex::new(library_state));
     let manifest = Arc::new(manifest);
 
     let mut handles = Vec::with_capacity(connected_peers.len());
     for peer in connected_peers {
         let queue = Arc::clone(&queue);
-        let chunks = Arc::clone(&chunks);
+        let completed_chunks = Arc::clone(&completed_chunks);
         let state = Arc::clone(&state);
         let manifest = Arc::clone(&manifest);
         let output_state_dir = output_state_dir.clone();
@@ -1115,7 +1118,7 @@ pub async fn download_file_from_peers_parallel_with_options(
                 peer,
                 manifest,
                 queue,
-                chunks,
+                completed_chunks,
                 state,
                 output_state_dir,
                 log_level,
@@ -1133,19 +1136,21 @@ pub async fn download_file_from_peers_parallel_with_options(
         }
     }
 
-    let chunks = match Arc::try_unwrap(chunks) {
-        Ok(chunks) => chunks.into_inner().expect("parallel chunk mutex poisoned"),
-        Err(chunks) => chunks
+    let completed_chunks = match Arc::try_unwrap(completed_chunks) {
+        Ok(completed_chunks) => completed_chunks
+            .into_inner()
+            .expect("parallel chunk mutex poisoned"),
+        Err(completed_chunks) => completed_chunks
             .lock()
             .expect("parallel chunk mutex poisoned")
             .clone(),
     };
 
-    if chunks.len() != total_chunks {
+    if completed_chunks.len() != total_chunks {
         if let Some(meta) = manifest
             .chunks
             .iter()
-            .find(|meta| !chunks.contains_key(&meta.index))
+            .find(|meta| !completed_chunks.contains(&meta.index))
         {
             if options.log_level.is_normal() && !worker_errors.is_empty() {
                 println!(
@@ -1161,15 +1166,10 @@ pub async fn download_file_from_peers_parallel_with_options(
         println!("[peer] decrypting and reconstructing file...");
     }
 
-    let encrypted = EncryptedFile {
-        manifest: (*manifest).clone(),
-        chunks,
-    };
-
-    decrypt_to_file(&encrypted, &file_key, output_path)?;
-
     {
         let state = state.lock().expect("parallel state mutex poisoned");
+        let active_state = active_download_state(&state)?;
+        decrypt_library_chunks_to_file(&active_state.paths, &manifest, &file_key, output_path)?;
         mark_download_library_complete(&state, output_state_dir)?;
     }
 
@@ -1272,15 +1272,27 @@ pub async fn download_file_from_peer_with_options(
         log_level,
     )?;
 
-    let mut chunks = load_resumable_chunks(
-        &mut library_state,
-        &manifest,
-        output_state_dir.clone(),
-        log_level,
-    )?;
+    let streaming_to_library = library_state.is_some();
+    let mut chunks = BTreeMap::new();
+    let mut completed_chunks = if streaming_to_library {
+        load_resumable_chunk_indexes(
+            &mut library_state,
+            &manifest,
+            output_state_dir.clone(),
+            log_level,
+        )?
+    } else {
+        chunks = load_resumable_chunks(
+            &mut library_state,
+            &manifest,
+            output_state_dir.clone(),
+            log_level,
+        )?;
+        chunks.keys().copied().collect::<BTreeSet<_>>()
+    };
 
-    if !chunks.is_empty() {
-        let have_chunks = chunks.keys().copied().collect::<Vec<_>>();
+    if !completed_chunks.is_empty() {
+        let have_chunks = completed_chunks.iter().copied().collect::<Vec<_>>();
         send_message(
             &mut stream,
             &WireMessage::Have {
@@ -1291,12 +1303,12 @@ pub async fn download_file_from_peer_with_options(
     }
 
     for meta in &manifest.chunks {
-        if chunks.contains_key(&meta.index) {
+        if completed_chunks.contains(&meta.index) {
             log_chunk_progress(
                 "peer",
                 "reused",
                 log_level,
-                chunks.len(),
+                completed_chunks.len(),
                 total_chunks,
                 meta.index,
                 meta.encrypted_size as usize,
@@ -1346,12 +1358,15 @@ pub async fn download_file_from_peer_with_options(
                     output_state_dir.clone(),
                 )?;
 
-                chunks.insert(index, encrypted_chunk);
+                completed_chunks.insert(index);
+                if !streaming_to_library {
+                    chunks.insert(index, encrypted_chunk);
+                }
                 log_chunk_progress(
                     "peer",
                     "received+verified",
                     log_level,
-                    chunks.len(),
+                    completed_chunks.len(),
                     total_chunks,
                     index,
                     chunk_len,
@@ -1366,11 +1381,11 @@ pub async fn download_file_from_peer_with_options(
         }
     }
 
-    if chunks.len() != total_chunks {
+    if completed_chunks.len() != total_chunks {
         if let Some(meta) = manifest
             .chunks
             .iter()
-            .find(|meta| !chunks.contains_key(&meta.index))
+            .find(|meta| !completed_chunks.contains(&meta.index))
         {
             return Err(NetworkError::MissingEncryptedChunk(meta.index));
         }
@@ -1380,12 +1395,17 @@ pub async fn download_file_from_peer_with_options(
         println!("[peer] decrypting and reconstructing file...");
     }
 
-    let encrypted = EncryptedFile {
-        manifest: manifest.clone(),
-        chunks,
-    };
+    if streaming_to_library {
+        let active_state = active_download_state(&library_state)?;
+        decrypt_library_chunks_to_file(&active_state.paths, &manifest, &file_key, output_path)?;
+    } else {
+        let encrypted = EncryptedFile {
+            manifest: manifest.clone(),
+            chunks,
+        };
 
-    decrypt_to_file(&encrypted, &file_key, output_path)?;
+        decrypt_to_file(&encrypted, &file_key, output_path)?;
+    }
     mark_download_library_complete(&library_state, output_state_dir)?;
 
     if log_level.is_normal() {
@@ -1503,14 +1523,14 @@ async fn parallel_download_worker(
     mut peer: ConnectedDownloadPeer,
     manifest: Arc<Manifest>,
     queue: Arc<Mutex<VecDeque<u32>>>,
-    chunks: Arc<Mutex<BTreeMap<u32, EncryptedChunk>>>,
+    chunks: Arc<Mutex<BTreeSet<u32>>>,
     state: Arc<Mutex<Option<ActiveDownloadLibraryState>>>,
     output_dir: Option<PathBuf>,
     log_level: TransferLogLevel,
 ) -> Result<(), NetworkError> {
     let initial_have = {
         let chunks = chunks.expect_lock("parallel chunk mutex poisoned");
-        chunks.keys().copied().collect::<Vec<_>>()
+        chunks.iter().copied().collect::<Vec<_>>()
     };
 
     if !initial_have.is_empty() {
@@ -1544,7 +1564,7 @@ async fn parallel_download_worker(
 
                 let done = {
                     let mut chunks = chunks.expect_lock("parallel chunk mutex poisoned");
-                    chunks.insert(index, encrypted_chunk);
+                    chunks.insert(index);
                     chunks.len()
                 };
 
@@ -1569,7 +1589,7 @@ async fn parallel_download_worker(
 
     let final_have = {
         let chunks = chunks.expect_lock("parallel chunk mutex poisoned");
-        chunks.keys().copied().collect::<Vec<_>>()
+        chunks.iter().copied().collect::<Vec<_>>()
     };
 
     if !final_have.is_empty() {
@@ -1615,7 +1635,7 @@ async fn request_chunk_from_peer(
 
 fn pop_next_available_missing_chunk(
     queue: &Mutex<VecDeque<u32>>,
-    chunks: &Mutex<BTreeMap<u32, EncryptedChunk>>,
+    chunks: &Mutex<BTreeSet<u32>>,
     available_chunks: &BTreeSet<u32>,
 ) -> Option<u32> {
     let mut queue = queue.expect_lock("parallel queue mutex poisoned");
@@ -1626,7 +1646,7 @@ fn pop_next_available_missing_chunk(
 
         if chunks
             .expect_lock("parallel chunk mutex poisoned")
-            .contains_key(&index)
+            .contains(&index)
         {
             continue;
         }
@@ -1876,6 +1896,101 @@ fn load_resumable_chunks(
     }
 
     Ok(chunks)
+}
+
+fn load_resumable_chunk_indexes(
+    state: &mut Option<ActiveDownloadLibraryState>,
+    manifest: &Manifest,
+    output_dir: Option<PathBuf>,
+    log_level: TransferLogLevel,
+) -> Result<BTreeSet<u32>, NetworkError> {
+    let Some(state) = state else {
+        return Ok(BTreeSet::new());
+    };
+
+    let mut completed = BTreeSet::new();
+    let mut valid_progress = DownloadProgress::empty(state.paths.share_id);
+
+    for meta in &manifest.chunks {
+        if !state.progress.has_chunk(meta.index) || !has_encrypted_chunk(&state.paths, meta.index) {
+            continue;
+        }
+
+        let chunk = read_encrypted_chunk(&state.paths, meta.index, meta.encrypted_size)?;
+        let actual_hash = hash_chunk(&chunk.data);
+        if actual_hash != meta.blake3_hash {
+            if log_level.is_verbose() {
+                println!("[peer] ignored invalid resumable chunk {}", meta.index);
+            }
+            continue;
+        }
+
+        valid_progress.mark_completed(meta.index);
+        completed.insert(meta.index);
+    }
+
+    state.progress = valid_progress;
+    write_progress(&state.paths, &state.progress)?;
+    write_state(
+        &state.paths,
+        &ShareState::from_progress(ShareMode::Downloading, output_dir, &state.progress),
+    )?;
+
+    if log_level.is_normal() && !completed.is_empty() {
+        println!(
+            "[peer] reused {}/{} chunks from local state",
+            completed.len(),
+            manifest.chunks.len()
+        );
+    }
+
+    Ok(completed)
+}
+
+fn active_download_state(
+    state: &Option<ActiveDownloadLibraryState>,
+) -> Result<&ActiveDownloadLibraryState, NetworkError> {
+    state.as_ref().ok_or_else(|| {
+        NetworkError::PeerError("download output reconstruction requires library state".to_string())
+    })
+}
+
+fn decrypt_library_chunks_to_file(
+    paths: &LibraryPaths,
+    manifest: &Manifest,
+    file_key: &SymmetricKey,
+    output_path: &Path,
+) -> Result<(), NetworkError> {
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let mut output = File::create(output_path)?;
+    let mut final_hasher = blake3::Hasher::new();
+
+    for meta in &manifest.chunks {
+        let chunk = read_encrypted_chunk(paths, meta.index, meta.encrypted_size)?;
+        let actual_hash = hash_chunk(&chunk.data);
+        if actual_hash != meta.blake3_hash {
+            return Err(FileError::ChunkHashMismatch(meta.index).into());
+        }
+
+        let aad = build_chunk_aad(manifest.file_id, meta.index, meta.plain_size);
+        let plaintext = decrypt_chunk(file_key, meta.nonce, &chunk.data, &aad)?;
+        final_hasher.update(&plaintext);
+        output.write_all(&plaintext)?;
+    }
+
+    output.flush()?;
+
+    let final_hash = FileId(*final_hasher.finalize().as_bytes());
+    if final_hash != manifest.file_id {
+        return Err(FileError::FinalHashMismatch.into());
+    }
+
+    Ok(())
 }
 
 fn persist_downloaded_chunk(
