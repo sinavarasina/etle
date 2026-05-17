@@ -301,6 +301,50 @@ pub async fn serve_library_share_to_one_peer(
     share_id: ShareId,
     options: ServeFileOptions,
 ) -> Result<EtleDescriptor, NetworkError> {
+    serve_library_share_to_one_peer_from_listener(&listener, library_root, share_id, options).await
+}
+
+pub async fn serve_library_share_forever(
+    listener: TcpListener,
+    library_root: impl AsRef<Path>,
+    share_id: ShareId,
+    options: ServeFileOptions,
+) -> Result<(), NetworkError> {
+    let library_root = library_root.as_ref().to_path_buf();
+
+    loop {
+        match serve_library_share_to_one_peer_from_listener(
+            &listener,
+            &library_root,
+            share_id,
+            options.clone(),
+        )
+        .await
+        {
+            Ok(descriptor) => {
+                if options.log_level.is_normal() {
+                    println!(
+                        "[seeder] ready for next peer: share=\"{}\", share_id={}",
+                        descriptor.name, descriptor.share_id
+                    );
+                }
+            }
+            Err(error) => {
+                if options.log_level.is_normal() {
+                    println!("[seeder] peer session failed: {error}");
+                    println!("[seeder] keeping listener alive for the next peer");
+                }
+            }
+        }
+    }
+}
+
+async fn serve_library_share_to_one_peer_from_listener(
+    listener: &TcpListener,
+    library_root: impl AsRef<Path>,
+    share_id: ShareId,
+    options: ServeFileOptions,
+) -> Result<EtleDescriptor, NetworkError> {
     let ServeFileOptions {
         seeder_id,
         log_level,

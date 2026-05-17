@@ -15,7 +15,7 @@ use etle::{
         DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
         client_hello_handshake, connect_peer, download_file_from_peers_parallel_with_options,
         download_file_from_peers_with_options, serve_file_to_one_peer_with_options,
-        serve_library_share_to_one_peer,
+        serve_library_share_forever, serve_library_share_to_one_peer,
     },
     state::{OUTPUT_DIR_NAME, ShareMode, default_library_root, list_library_shares},
 };
@@ -77,6 +77,10 @@ enum Command {
         /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
         #[arg(long)]
         library_root: Option<PathBuf>,
+
+        /// Keep serving this share after one peer disconnects.
+        #[arg(long)]
+        forever: bool,
     },
 
     /// List local shares stored in the .etle library.
@@ -172,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
             share_id,
             listen,
             peer_id,
+            forever,
             library_root,
         } => {
             let library_root = library_root.unwrap_or_else(default_library_root);
@@ -179,21 +184,30 @@ async fn main() -> anyhow::Result<()> {
             println!("[seeder] loading share from state: {share_id}");
             println!("[seeder] listen address: {listen}");
             println!("[seeder] library root: {}", library_root.display());
-            println!("[seeder] waiting for one peer...");
 
             let listener = bind_listener(listen).await?;
-            let descriptor = serve_library_share_to_one_peer(
-                listener,
-                &library_root,
-                share_id,
-                ServeFileOptions::new(peer_id, log_level),
-            )
-            .await?;
+            let serve_options = ServeFileOptions::new(peer_id, log_level);
 
-            println!("[seeder] transfer completed");
-            println!("[seeder] share: {}", descriptor.name);
-            println!("[seeder] share_id: {}", descriptor.share_id);
-            println!("[seeder] chunks: {}", descriptor.chunks.len());
+            if forever {
+                println!("[seeder] serving continuously; press Ctrl+C to stop");
+                serve_library_share_forever(listener, &library_root, share_id, serve_options)
+                    .await?;
+            } else {
+                println!("[seeder] waiting for one peer...");
+
+                let descriptor = serve_library_share_to_one_peer(
+                    listener,
+                    &library_root,
+                    share_id,
+                    serve_options,
+                )
+                .await?;
+
+                println!("[seeder] transfer completed");
+                println!("[seeder] share: {}", descriptor.name);
+                println!("[seeder] share_id: {}", descriptor.share_id);
+                println!("[seeder] chunks: {}", descriptor.chunks.len());
+            }
         }
 
         Command::List { library_root } => {
