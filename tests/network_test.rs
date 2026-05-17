@@ -1,4 +1,8 @@
-use etle::network::{accept_peer, bind_listener, client_hello, connect_peer, server_hello};
+use etle::crypto::hash::FileId;
+use etle::network::{
+    accept_peer, bind_listener, client_hello, client_key_exchange, connect_peer, server_hello,
+    server_key_exchange,
+};
 use etle::protocol::{WireMessage, send_message};
 
 #[tokio::test]
@@ -50,6 +54,50 @@ async fn server_rejects_non_hello_handshake_message() {
     send_message(&mut client, &WireMessage::RequestManifest)
         .await
         .unwrap();
+
+    let result = server.await.unwrap();
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn key_exchange_over_tcp_derives_same_file_key() {
+    let listener = bind_listener("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let file_id = FileId([42_u8; 32]);
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _remote_addr) = accept_peer(&listener).await.unwrap();
+        server_key_exchange(&mut stream, file_id).await.unwrap()
+    });
+
+    let mut client = connect_peer(addr).await.unwrap();
+    let client_key = client_key_exchange(&mut client, file_id).await.unwrap();
+    let server_key = server.await.unwrap();
+
+    assert_eq!(client_key.file_key, server_key.file_key);
+    assert_ne!(client_key.remote_public_key, server_key.remote_public_key);
+}
+
+#[tokio::test]
+async fn server_rejects_non_key_exchange_message() {
+    let listener = bind_listener("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let file_id = FileId([42_u8; 32]);
+
+    let server = tokio::spawn(async move {
+        let (mut stream, _remote_addr) = accept_peer(&listener).await.unwrap();
+        server_key_exchange(&mut stream, file_id).await
+    });
+
+    let mut client = connect_peer(addr).await.unwrap();
+    send_message(
+        &mut client,
+        &WireMessage::Hello {
+            peer_id: "not-key-exchange".to_string(),
+        },
+    )
+    .await
+    .unwrap();
 
     let result = server.await.unwrap();
     assert!(result.is_err());
