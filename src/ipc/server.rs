@@ -7,6 +7,9 @@ use std::{
 #[cfg(unix)]
 use tokio::net::UnixListener;
 
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ServerOptions;
+
 use crate::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId, manifest::Manifest},
     ipc::{IpcCommand, IpcError, IpcResponse, IpcShareSummary},
@@ -17,7 +20,7 @@ use crate::{
     state::{LocalShareSummary, OUTPUT_DIR_NAME, ShareMode, list_library_shares},
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::ipc::{receive_ipc_message, send_ipc_message};
 
 #[cfg(unix)]
@@ -40,7 +43,25 @@ pub async fn serve_ipc_forever(
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub async fn serve_ipc_forever(
+    pipe_name: impl AsRef<Path>,
+    library_root: impl AsRef<Path>,
+) -> Result<(), IpcError> {
+    let pipe_name = pipe_name.as_ref().to_path_buf();
+    let library_root = library_root.as_ref().to_path_buf();
+
+    loop {
+        let should_shutdown = serve_ipc_once_named_pipe(&pipe_name, &library_root).await?;
+        if should_shutdown {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 pub async fn serve_ipc_forever(
     _socket_path: impl AsRef<Path>,
     _library_root: impl AsRef<Path>,
@@ -48,7 +69,7 @@ pub async fn serve_ipc_forever(
     let _ = _socket_path;
     let _ = _library_root;
     Err(IpcError::UnsupportedPlatform(
-        "local daemon IPC currently uses Unix sockets; Windows named pipes will be added later",
+        "local daemon IPC currently supports Unix sockets and Windows named pipes only",
     ))
 }
 
@@ -62,6 +83,22 @@ pub async fn serve_ipc_once(
     let should_shutdown = matches!(command, IpcCommand::Shutdown);
     let response = handle_ipc_command_async(command, library_root.as_ref()).await;
     send_ipc_message(&mut stream, &response).await?;
+    Ok(should_shutdown)
+}
+
+#[cfg(windows)]
+async fn serve_ipc_once_named_pipe(
+    pipe_name: &Path,
+    library_root: &Path,
+) -> Result<bool, IpcError> {
+    let mut stream = ServerOptions::new().create(pipe_name)?;
+    stream.connect().await?;
+
+    let command: IpcCommand = receive_ipc_message(&mut stream).await?;
+    let should_shutdown = matches!(command, IpcCommand::Shutdown);
+    let response = handle_ipc_command_async(command, library_root).await;
+    send_ipc_message(&mut stream, &response).await?;
+
     Ok(should_shutdown)
 }
 

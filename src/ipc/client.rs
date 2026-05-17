@@ -2,11 +2,14 @@ use std::path::Path;
 
 use crate::ipc::{IpcCommand, IpcError, IpcResponse};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use crate::ipc::{receive_ipc_message, send_ipc_message};
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
+
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ClientOptions;
 
 #[cfg(unix)]
 pub async fn send_ipc_command(
@@ -18,12 +21,22 @@ pub async fn send_ipc_command(
     receive_ipc_message(&mut stream).await
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub async fn send_ipc_command(
+    pipe_name: impl AsRef<Path>,
+    command: IpcCommand,
+) -> Result<IpcResponse, IpcError> {
+    let mut stream = ClientOptions::new().open(pipe_name.as_ref())?;
+    send_ipc_message(&mut stream, &command).await?;
+    receive_ipc_message(&mut stream).await
+}
+
+#[cfg(not(any(unix, windows)))]
 pub async fn send_ipc_command(
     _socket_path: impl AsRef<Path>,
     _command: IpcCommand,
 ) -> Result<IpcResponse, IpcError> {
     Err(IpcError::UnsupportedPlatform(
-        "local daemon IPC currently uses Unix sockets; Windows named pipes will be added later",
+        "local daemon IPC currently supports Unix sockets and Windows named pipes only",
     ))
 }
