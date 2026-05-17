@@ -26,11 +26,11 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [[bin]]
-name = "p2p-cli"
-path = "src/bin/p2p-cli.rs"
+name = "etle-cli"
+path = "src/bin/etle-cli.rs"
 required-features = ["cli"]
 
 [[bin]]
-name = "p2p-gui"
-path = "src/bin/p2p-gui.rs"
+name = "etle-gui"
+path = "src/bin/etle-gui.rs"
 required-features = ["gui-relm4"]
