@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -29,6 +31,15 @@ pub enum FileError {
         expected: u64,
         actual: u64,
     },
+
+    #[error("invalid package input path: {0:?}")]
+    InvalidPackageInput(PathBuf),
+
+    #[error("package path is outside root: path={path:?}, root={root:?}")]
+    PathOutsideRoot { path: PathBuf, root: PathBuf },
+
+    #[error("package contains no files")]
+    EmptyPackage,
 
     #[error("final file hash mismatch")]
     FinalHashMismatch,
