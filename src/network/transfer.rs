@@ -24,9 +24,9 @@ use crate::{
     },
     protocol::{WireMessage, receive_message, send_message},
     state::{
-        DownloadProgress, LibraryPaths, ShareMode, ShareState, initialize_share_library,
-        read_descriptor, read_encrypted_chunk, read_secret, write_encrypted_chunk, write_progress,
-        write_state,
+        DownloadProgress, LibraryPaths, ShareMode, ShareState, has_encrypted_chunk,
+        initialize_share_library, read_descriptor, read_encrypted_chunk, read_progress,
+        read_secret, write_encrypted_chunk, write_progress, write_state,
     },
 };
 
@@ -79,6 +79,7 @@ pub struct DownloadFileOptions {
     pub peer_id: String,
     pub log_level: TransferLogLevel,
     pub library_root: Option<PathBuf>,
+    pub resume: bool,
 }
 
 impl DownloadFileOptions {
@@ -88,12 +89,19 @@ impl DownloadFileOptions {
             peer_id: peer_id.into(),
             log_level,
             library_root: None,
+            resume: false,
         }
     }
 
     #[must_use]
     pub fn with_library_root(mut self, library_root: impl Into<PathBuf>) -> Self {
         self.library_root = Some(library_root.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn with_resume(mut self, resume: bool) -> Self {
+        self.resume = resume;
         self
     }
 }
@@ -202,10 +210,25 @@ pub async fn serve_file_to_one_peer_with_options(
         println!("[seeder] wrapped file key sent");
     }
 
-    let mut served = std::collections::BTreeSet::new();
+    let mut served_or_known = std::collections::BTreeSet::new();
 
-    while served.len() < total_chunks {
+    while served_or_known.len() < total_chunks {
         match receive_message(&mut stream).await? {
+            WireMessage::Have { chunks } => {
+                for index in chunks {
+                    if encrypted.chunks.contains_key(&index) {
+                        served_or_known.insert(index);
+                    }
+                }
+
+                if log_level.is_normal() {
+                    println!(
+                        "[seeder] peer already has {}/{} chunks",
+                        served_or_known.len(),
+                        total_chunks
+                    );
+                }
+            }
             WireMessage::RequestChunk { index } => {
                 let chunk = encrypted
                     .chunks
@@ -221,8 +244,8 @@ pub async fn serve_file_to_one_peer_with_options(
                 )
                 .await?;
 
-                served.insert(index);
-                let served_count = served.len();
+                served_or_known.insert(index);
+                let served_count = served_or_known.len();
                 log_chunk_progress(
                     "seeder",
                     "served",
@@ -235,7 +258,7 @@ pub async fn serve_file_to_one_peer_with_options(
             }
             actual => {
                 return Err(NetworkError::UnexpectedMessage {
-                    expected: "RequestChunk",
+                    expected: "Have or RequestChunk",
                     actual,
                 });
             }
@@ -308,9 +331,24 @@ pub async fn serve_library_share_to_one_peer(
         println!("[seeder] wrapped file key sent");
     }
 
-    let mut served = std::collections::BTreeSet::new();
-    while served.len() < total_chunks {
+    let mut served_or_known = std::collections::BTreeSet::new();
+    while served_or_known.len() < total_chunks {
         match receive_message(&mut stream).await? {
+            WireMessage::Have { chunks } => {
+                for index in chunks {
+                    if descriptor.chunks.iter().any(|chunk| chunk.index == index) {
+                        served_or_known.insert(index);
+                    }
+                }
+
+                if log_level.is_normal() {
+                    println!(
+                        "[seeder] peer already has {}/{} chunks",
+                        served_or_known.len(),
+                        total_chunks
+                    );
+                }
+            }
             WireMessage::RequestChunk { index } => {
                 let meta = descriptor
                     .chunks
@@ -328,12 +366,12 @@ pub async fn serve_library_share_to_one_peer(
                 )
                 .await?;
 
-                served.insert(index);
+                served_or_known.insert(index);
                 log_chunk_progress(
                     "seeder",
                     "served-from-state",
                     log_level,
-                    served.len(),
+                    served_or_known.len(),
                     total_chunks,
                     index,
                     chunk.data.len(),
@@ -341,7 +379,7 @@ pub async fn serve_library_share_to_one_peer(
             }
             actual => {
                 return Err(NetworkError::UnexpectedMessage {
-                    expected: "RequestChunk",
+                    expected: "Have or RequestChunk",
                     actual,
                 });
             }
@@ -373,6 +411,7 @@ pub async fn download_file_from_peer_with_options(
         peer_id,
         log_level,
         library_root,
+        resume,
     } = options;
     let output_path = output_path.as_ref();
     let mut stream = connect_peer(peer_addr).await?;
@@ -438,12 +477,42 @@ pub async fn download_file_from_peer_with_options(
         &descriptor,
         file_key,
         output_state_dir.clone(),
+        resume,
         log_level,
     )?;
 
-    let mut chunks = BTreeMap::new();
+    let mut chunks = load_resumable_chunks(
+        &mut library_state,
+        &manifest,
+        output_state_dir.clone(),
+        log_level,
+    )?;
 
-    for (position, meta) in manifest.chunks.iter().enumerate() {
+    if !chunks.is_empty() {
+        let have_chunks = chunks.keys().copied().collect::<Vec<_>>();
+        send_message(
+            &mut stream,
+            &WireMessage::Have {
+                chunks: have_chunks,
+            },
+        )
+        .await?;
+    }
+
+    for meta in &manifest.chunks {
+        if chunks.contains_key(&meta.index) {
+            log_chunk_progress(
+                "peer",
+                "reused",
+                log_level,
+                chunks.len(),
+                total_chunks,
+                meta.index,
+                meta.encrypted_size as usize,
+            );
+            continue;
+        }
+
         send_message(
             &mut stream,
             &WireMessage::RequestChunk { index: meta.index },
@@ -481,7 +550,7 @@ pub async fn download_file_from_peer_with_options(
                     "peer",
                     "received+verified",
                     log_level,
-                    position + 1,
+                    chunks.len(),
                     total_chunks,
                     index,
                     chunk_len,
@@ -586,10 +655,25 @@ fn initialize_download_library_state(
     descriptor: &EtleDescriptor,
     file_key: crate::crypto::aead::SymmetricKey,
     output_dir: Option<PathBuf>,
+    resume: bool,
     log_level: TransferLogLevel,
 ) -> Result<Option<ActiveDownloadLibraryState>, NetworkError> {
     let Some(root) = library_root else {
         return Ok(None);
+    };
+
+    let paths = LibraryPaths::for_share(root, descriptor.share_id);
+    let progress = if resume && paths.progress_path().is_file() {
+        if paths.descriptor_path().is_file() {
+            let existing = read_descriptor(&paths)?;
+            if existing != *descriptor && log_level.is_verbose() {
+                println!("[peer] existing descriptor differs; resetting resume state");
+            }
+        }
+
+        read_progress(&paths).unwrap_or_else(|_| DownloadProgress::empty(descriptor.share_id))
+    } else {
+        DownloadProgress::empty(descriptor.share_id)
     };
 
     let paths = initialize_share_library(
@@ -597,18 +681,83 @@ fn initialize_download_library_state(
         descriptor,
         file_key,
         ShareMode::Downloading,
-        output_dir,
+        output_dir.clone(),
     )?;
-    let progress = DownloadProgress::empty(descriptor.share_id);
+
+    if progress.completed_chunks.is_empty() {
+        if log_level.is_normal() {
+            println!(
+                "[peer] download state initialized: {}",
+                paths.share_dir().display()
+            );
+        }
+        return Ok(Some(ActiveDownloadLibraryState { paths, progress }));
+    }
+
+    write_progress(&paths, &progress)?;
+    write_state(
+        &paths,
+        &ShareState::from_progress(ShareMode::Downloading, output_dir, &progress),
+    )?;
 
     if log_level.is_normal() {
         println!(
-            "[peer] download state initialized: {}",
-            paths.share_dir().display()
+            "[peer] resume state loaded: {}/{} chunks",
+            progress.completed_chunks.len(),
+            descriptor.chunks.len()
         );
     }
 
     Ok(Some(ActiveDownloadLibraryState { paths, progress }))
+}
+
+fn load_resumable_chunks(
+    state: &mut Option<ActiveDownloadLibraryState>,
+    manifest: &Manifest,
+    output_dir: Option<PathBuf>,
+    log_level: TransferLogLevel,
+) -> Result<BTreeMap<u32, EncryptedChunk>, NetworkError> {
+    let Some(state) = state else {
+        return Ok(BTreeMap::new());
+    };
+
+    let mut chunks = BTreeMap::new();
+    let mut valid_progress = DownloadProgress::empty(state.paths.share_id);
+
+    for meta in &manifest.chunks {
+        if !state.progress.has_chunk(meta.index) || !has_encrypted_chunk(&state.paths, meta.index) {
+            continue;
+        }
+
+        let chunk = read_encrypted_chunk(&state.paths, meta.index, meta.encrypted_size)?;
+        let actual_hash = hash_chunk(&chunk.data);
+        if actual_hash != meta.blake3_hash {
+            if log_level.is_verbose() {
+                println!("[peer] ignored invalid resumable chunk {}", meta.index);
+            }
+            continue;
+        }
+
+        valid_progress.mark_completed(meta.index);
+        chunks.insert(meta.index, chunk);
+    }
+
+    state.progress = valid_progress;
+    write_progress(&state.paths, &state.progress)?;
+    write_state(
+        &state.paths,
+        &ShareState::from_progress(ShareMode::Downloading, output_dir, &state.progress),
+    )?;
+
+    if log_level.is_normal() && !chunks.is_empty() {
+        println!(
+            "[peer] reused {}/{} chunks from local state",
+            chunks.len(),
+            manifest.chunks.len()
+        );
+    }
+
+    Ok(chunks)
 }
 
 fn persist_downloaded_chunk(

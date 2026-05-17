@@ -98,6 +98,10 @@ enum Command {
         /// Root directory for the local .etle library state.
         #[arg(long, default_value = ".")]
         library_root: PathBuf,
+
+        /// Reuse verified encrypted chunks from the local .etle library when available.
+        #[arg(long)]
+        resume: bool,
     },
 
     /// Perform a basic TCP + hello handshake probe.
@@ -204,15 +208,21 @@ async fn main() -> anyhow::Result<()> {
             output,
             peer_id,
             library_root,
+            resume,
         } => {
             println!("[peer] connecting to {peer}");
             println!("[peer] output path: {}", output.display());
             println!("[peer] library root: {}", library_root.display());
+            if resume {
+                println!("[peer] resume enabled");
+            }
 
             let manifest = download_file_from_peer_with_options(
                 peer,
                 &output,
-                DownloadFileOptions::new(peer_id, log_level).with_library_root(library_root),
+                DownloadFileOptions::new(peer_id, log_level)
+                    .with_library_root(library_root)
+                    .with_resume(resume),
             )
             .await?;
 
