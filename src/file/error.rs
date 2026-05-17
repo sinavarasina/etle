@@ -41,6 +41,12 @@ pub enum FileError {
     #[error("package contains no files")]
     EmptyPackage,
 
+    #[error("share id mismatch: expected {expected}, got {actual}")]
+    ShareIdMismatch {
+        expected: crate::file::descriptor::ShareId,
+        actual: crate::file::descriptor::ShareId,
+    },
+
     #[error("final file hash mismatch")]
     FinalHashMismatch,
 }
