@@ -42,4 +42,7 @@ pub enum NetworkError {
         "all peer download attempts failed after {attempts} attempt(s); last error: {last_error}"
     )]
     AllPeersFailed { attempts: usize, last_error: String },
+
+    #[error("peer error: {0}")]
+    PeerError(String),
 }

@@ -13,7 +13,7 @@ use etle::{
         download_file_from_peers_with_options, serve_file_to_one_peer_with_options,
         serve_library_share_to_one_peer,
     },
-    state::{ShareMode, list_library_shares},
+    state::{ShareMode, default_library_root, list_library_shares},
 };
 
 #[cfg(feature = "cli")]
@@ -52,9 +52,9 @@ enum Command {
         #[arg(long, default_value = "etle-seeder")]
         peer_id: String,
 
-        /// Root directory for the local .etle library state.
-        #[arg(long, default_value = ".")]
-        library_root: PathBuf,
+        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
+        #[arg(long)]
+        library_root: Option<PathBuf>,
     },
 
     /// Seed an already persisted share from the local .etle library.
@@ -70,16 +70,16 @@ enum Command {
         #[arg(long, default_value = "etle-seeder")]
         peer_id: String,
 
-        /// Root directory for the local .etle library state.
-        #[arg(long, default_value = ".")]
-        library_root: PathBuf,
+        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
+        #[arg(long)]
+        library_root: Option<PathBuf>,
     },
 
     /// List local shares stored in the .etle library.
     List {
-        /// Root directory for the local .etle library state.
-        #[arg(long, default_value = ".")]
-        library_root: PathBuf,
+        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
+        #[arg(long)]
+        library_root: Option<PathBuf>,
     },
 
     /// Download a file from one or more seeder peers.
@@ -96,9 +96,9 @@ enum Command {
         #[arg(long, default_value = "etle-peer")]
         peer_id: String,
 
-        /// Root directory for the local .etle library state.
-        #[arg(long, default_value = ".")]
-        library_root: PathBuf,
+        /// Root directory for local state. Defaults to $ETLE_LIBRARY_ROOT or ~/Downloads/ETLE.
+        #[arg(long)]
+        library_root: Option<PathBuf>,
 
         /// Reuse verified encrypted chunks from the local .etle library when available.
         #[arg(long)]
@@ -139,6 +139,8 @@ async fn main() -> anyhow::Result<()> {
             peer_id,
             library_root,
         } => {
+            let library_root = library_root.unwrap_or_else(default_library_root);
+
             println!("[seeder] loading file: {}", file.display());
             println!("[seeder] listen address: {listen}");
             println!("[seeder] chunk size: {chunk_size} bytes");
@@ -163,6 +165,8 @@ async fn main() -> anyhow::Result<()> {
             peer_id,
             library_root,
         } => {
+            let library_root = library_root.unwrap_or_else(default_library_root);
+
             println!("[seeder] loading share from state: {share_id}");
             println!("[seeder] listen address: {listen}");
             println!("[seeder] library root: {}", library_root.display());
@@ -184,6 +188,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Command::List { library_root } => {
+            let library_root = library_root.unwrap_or_else(default_library_root);
+
             let shares = list_library_shares(&library_root)?;
             println!("[library] root: {}", library_root.display());
 
@@ -216,6 +222,8 @@ async fn main() -> anyhow::Result<()> {
             resume,
             parallel,
         } => {
+            let library_root = library_root.unwrap_or_else(default_library_root);
+
             println!("[peer] peer count: {}", peer.len());
             for (index, peer_addr) in peer.iter().enumerate() {
                 println!("[peer] peer {}: {peer_addr}", index + 1);

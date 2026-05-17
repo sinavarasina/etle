@@ -95,6 +95,18 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
 
     copy_dir_all(&seeder_a_root, &seeder_b_root);
 
+    // Simulate partial seeders: each peer has only part of the encrypted
+    // chunk set, but their availability union is complete.
+    let seeder_a_paths = LibraryPaths::for_share(&seeder_a_root, share_id);
+    let seeder_b_paths = LibraryPaths::for_share(&seeder_b_root, share_id);
+    for meta in &bootstrap_manifest.chunks {
+        if meta.index % 2 == 0 {
+            fs::remove_file(seeder_b_paths.chunk_path(meta.index)).unwrap();
+        } else {
+            fs::remove_file(seeder_a_paths.chunk_path(meta.index)).unwrap();
+        }
+    }
+
     let seeder_a_listener = bind_listener("127.0.0.1:0").await.unwrap();
     let seeder_a_addr = seeder_a_listener.local_addr().unwrap();
     let seeder_a_root_task = seeder_a_root.clone();

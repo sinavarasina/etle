@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -23,6 +23,9 @@ pub const STATE_FILE_NAME: &str = "state.bin";
 pub const CHUNKS_DIR_NAME: &str = "chunks";
 pub const OUTPUT_DIR_NAME: &str = "output";
 pub const CHUNK_EXTENSION: &str = "etle";
+pub const ETLE_LIBRARY_ROOT_ENV: &str = "ETLE_LIBRARY_ROOT";
+pub const DOWNLOADS_DIR_NAME: &str = "Downloads";
+pub const ETLE_DOWNLOADS_DIR_NAME: &str = "ETLE";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShareMode {
@@ -252,6 +255,53 @@ impl LocalShareSummary {
     pub fn mode(&self) -> Option<ShareMode> {
         self.state.as_ref().map(|state| state.mode)
     }
+}
+
+/// Returns ETLE's platform-friendly default library root.
+///
+/// Precedence:
+///
+/// 1. `ETLE_LIBRARY_ROOT`
+/// 2. Windows: `%USERPROFILE%\\Downloads\\ETLE`
+/// 3. Unix-like: `$HOME/Downloads/ETLE`
+/// 4. Fallback: `./Downloads/ETLE`
+#[must_use]
+pub fn default_library_root() -> PathBuf {
+    if let Some(root) = env::var_os(ETLE_LIBRARY_ROOT_ENV) {
+        return PathBuf::from(root);
+    }
+
+    home_dir_from_env()
+        .map(default_library_root_from_home)
+        .unwrap_or_else(|| default_library_root_from_home(Path::new(".")))
+}
+
+#[must_use]
+pub fn default_library_root_from_home(home: impl AsRef<Path>) -> PathBuf {
+    home.as_ref()
+        .join(DOWNLOADS_DIR_NAME)
+        .join(ETLE_DOWNLOADS_DIR_NAME)
+}
+
+#[must_use]
+pub fn home_dir_from_env() -> Option<PathBuf> {
+    if cfg!(windows) {
+        env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .or_else(windows_home_from_drive_and_path)
+    } else {
+        env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn windows_home_from_drive_and_path() -> Option<PathBuf> {
+    let drive = env::var_os("HOMEDRIVE")?;
+    let path = env::var_os("HOMEPATH")?;
+    Some(PathBuf::from(format!(
+        "{}{}",
+        drive.to_string_lossy(),
+        path.to_string_lossy()
+    )))
 }
 
 pub fn list_library_shares(root: impl AsRef<Path>) -> Result<Vec<LocalShareSummary>, FileError> {

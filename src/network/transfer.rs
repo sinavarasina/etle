@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::ErrorKind,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -213,7 +213,20 @@ pub async fn serve_file_to_one_peer_with_options(
         println!("[seeder] wrapped file key sent");
     }
 
-    let mut served_or_known = std::collections::BTreeSet::new();
+    let available_chunks = encrypted.chunks.keys().copied().collect::<Vec<_>>();
+    send_message(
+        &mut stream,
+        &WireMessage::Have {
+            chunks: available_chunks,
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] advertised {total_chunks}/{total_chunks} available chunks");
+    }
+
+    let mut served_or_known = BTreeSet::new();
 
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
@@ -298,6 +311,8 @@ pub async fn serve_library_share_to_one_peer(
     let secret = read_secret(&paths)?;
     let manifest = manifest_from_descriptor(&descriptor)?;
     let total_chunks = descriptor.chunks.len();
+    let available_chunks = available_chunk_indexes(&paths, &descriptor)?;
+    let available_set = available_chunks.iter().copied().collect::<BTreeSet<_>>();
 
     let (mut stream, peer_addr) = accept_peer(&listener).await?;
     if log_level.is_normal() {
@@ -345,7 +360,23 @@ pub async fn serve_library_share_to_one_peer(
         println!("[seeder] wrapped file key sent");
     }
 
-    let mut served_or_known = std::collections::BTreeSet::new();
+    send_message(
+        &mut stream,
+        &WireMessage::Have {
+            chunks: available_chunks.clone(),
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!(
+            "[seeder] advertised {}/{} available chunks",
+            available_chunks.len(),
+            total_chunks
+        );
+    }
+
+    let mut served_or_known = BTreeSet::new();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -361,7 +392,7 @@ pub async fn serve_library_share_to_one_peer(
         match message {
             WireMessage::Have { chunks } => {
                 for index in chunks {
-                    if descriptor.chunks.iter().any(|chunk| chunk.index == index) {
+                    if available_set.contains(&index) {
                         served_or_known.insert(index);
                     }
                 }
@@ -375,6 +406,17 @@ pub async fn serve_library_share_to_one_peer(
                 }
             }
             WireMessage::RequestChunk { index } => {
+                if !available_set.contains(&index) {
+                    send_message(
+                        &mut stream,
+                        &WireMessage::Error {
+                            message: format!("chunk {index} is not available from this peer"),
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+
                 let meta = descriptor
                     .chunks
                     .iter()
@@ -759,6 +801,15 @@ pub async fn download_file_from_peer_with_options(
         println!("[peer] wrapped file key received and unlocked");
     }
 
+    let peer_available = receive_peer_availability(&mut stream, log_level, peer_addr).await?;
+    if log_level.is_normal() {
+        println!(
+            "[peer] peer availability: {}/{} chunks",
+            peer_available.len(),
+            total_chunks
+        );
+    }
+
     let descriptor = descriptor_from_manifest(&manifest);
     let output_state_dir = output_parent_dir(output_path);
     let mut library_state = initialize_download_library_state(
@@ -799,6 +850,16 @@ pub async fn download_file_from_peer_with_options(
                 meta.index,
                 meta.encrypted_size as usize,
             );
+            continue;
+        }
+
+        if !peer_available.contains(&meta.index) {
+            if log_level.is_verbose() {
+                println!(
+                    "[peer] skipping chunk {}: unavailable on this peer",
+                    meta.index
+                );
+            }
             continue;
         }
 
@@ -854,6 +915,16 @@ pub async fn download_file_from_peer_with_options(
         }
     }
 
+    if chunks.len() != total_chunks {
+        if let Some(meta) = manifest
+            .chunks
+            .iter()
+            .find(|meta| !chunks.contains_key(&meta.index))
+        {
+            return Err(NetworkError::MissingEncryptedChunk(meta.index));
+        }
+    }
+
     if log_level.is_normal() {
         println!("[peer] decrypting and reconstructing file...");
     }
@@ -879,6 +950,7 @@ struct ConnectedDownloadPeer {
     stream: TcpStream,
     manifest: Manifest,
     file_key: SymmetricKey,
+    available_chunks: BTreeSet<u32>,
 }
 
 async fn connect_download_peer(
@@ -937,11 +1009,21 @@ async fn connect_download_peer(
         println!("[peer] wrapped file key received and unlocked from {peer_addr}");
     }
 
+    let available_chunks = receive_peer_availability(&mut stream, log_level, peer_addr).await?;
+    if log_level.is_normal() {
+        println!(
+            "[peer] peer {peer_addr} has {}/{} chunks",
+            available_chunks.len(),
+            manifest.chunks.len()
+        );
+    }
+
     Ok(ConnectedDownloadPeer {
         peer_addr,
         stream,
         manifest,
         file_key,
+        available_chunks,
     })
 }
 
@@ -970,7 +1052,8 @@ async fn parallel_download_worker(
     }
 
     loop {
-        let Some(index) = pop_next_missing_chunk(&queue, &chunks) else {
+        let Some(index) = pop_next_available_missing_chunk(&queue, &chunks, &peer.available_chunks)
+        else {
             break;
         };
 
@@ -1050,6 +1133,7 @@ async fn request_chunk_from_peer(
 
             Ok(EncryptedChunk { index, data })
         }
+        WireMessage::Error { message } => Err(NetworkError::PeerError(message)),
         actual => Err(NetworkError::UnexpectedMessage {
             expected: "Chunk",
             actual,
@@ -1057,22 +1141,32 @@ async fn request_chunk_from_peer(
     }
 }
 
-fn pop_next_missing_chunk(
+fn pop_next_available_missing_chunk(
     queue: &Mutex<VecDeque<u32>>,
     chunks: &Mutex<BTreeMap<u32, EncryptedChunk>>,
+    available_chunks: &BTreeSet<u32>,
 ) -> Option<u32> {
-    loop {
-        let index = queue
-            .expect_lock("parallel queue mutex poisoned")
-            .pop_front()?;
+    let mut queue = queue.expect_lock("parallel queue mutex poisoned");
+    let attempts = queue.len();
 
-        if !chunks
+    for _ in 0..attempts {
+        let index = queue.pop_front()?;
+
+        if chunks
             .expect_lock("parallel chunk mutex poisoned")
             .contains_key(&index)
         {
+            continue;
+        }
+
+        if available_chunks.contains(&index) {
             return Some(index);
         }
+
+        queue.push_back(index);
     }
+
+    None
 }
 
 fn manifests_are_compatible(left: &Manifest, right: &Manifest) -> bool {
@@ -1091,6 +1185,50 @@ impl<T> MutexExpectLock<T> for Mutex<T> {
     fn expect_lock(&self, message: &str) -> std::sync::MutexGuard<'_, T> {
         self.lock().expect(message)
     }
+}
+
+async fn receive_peer_availability(
+    stream: &mut TcpStream,
+    log_level: TransferLogLevel,
+    peer_addr: SocketAddr,
+) -> Result<BTreeSet<u32>, NetworkError> {
+    match receive_message(stream).await? {
+        WireMessage::Have { chunks } => Ok(chunks.into_iter().collect()),
+        WireMessage::Error { message } => Err(NetworkError::PeerError(message)),
+        actual => {
+            if log_level.is_normal() {
+                println!("[peer] {peer_addr} did not advertise chunk availability");
+            }
+
+            Err(NetworkError::UnexpectedMessage {
+                expected: "Have",
+                actual,
+            })
+        }
+    }
+}
+
+fn available_chunk_indexes(
+    paths: &LibraryPaths,
+    descriptor: &EtleDescriptor,
+) -> Result<Vec<u32>, NetworkError> {
+    let mut available = Vec::new();
+
+    for meta in &descriptor.chunks {
+        if !has_encrypted_chunk(paths, meta.index) {
+            continue;
+        }
+
+        let Ok(chunk) = read_encrypted_chunk(paths, meta.index, meta.encrypted_size) else {
+            continue;
+        };
+
+        if hash_chunk(&chunk.data) == meta.blake3_hash {
+            available.push(meta.index);
+        }
+    }
+
+    Ok(available)
 }
 
 fn descriptor_from_manifest(manifest: &Manifest) -> EtleDescriptor {
