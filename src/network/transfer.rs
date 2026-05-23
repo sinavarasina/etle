@@ -1766,15 +1766,8 @@ async fn parallel_download_worker(
             continue;
         };
 
-        match request_chunk_from_peer(&mut peer.stream, meta).await {
-            Ok(encrypted_chunk) => {
-                let chunk_len = encrypted_chunk.data.len();
-
-                {
-                    let mut state = state.expect_lock("parallel state mutex poisoned");
-                    persist_downloaded_chunk(&mut state, &encrypted_chunk, output_dir.clone())?;
-                }
-
+        match request_chunk_from_peer_to_library(&mut peer.stream, meta, &state, output_dir.clone()).await {
+            Ok(chunk_len) => {
                 let done = {
                     let mut chunks = chunks.expect_lock("parallel chunk mutex poisoned");
                     chunks.insert(index);
@@ -1825,14 +1818,40 @@ async fn parallel_download_worker(
     Ok(())
 }
 
-async fn request_chunk_from_peer(
+async fn request_chunk_from_peer_to_library(
     stream: &mut TcpStream,
     meta: &ChunkMeta,
-) -> Result<EncryptedChunk, NetworkError> {
+    state: &Arc<Mutex<Option<ActiveDownloadLibraryState>>>,
+    output_dir: Option<PathBuf>,
+) -> Result<usize, NetworkError> {
     send_message(stream, &WireMessage::RequestChunk { index: meta.index }).await?;
 
-    match receive_message(stream).await? {
-        WireMessage::Chunk { index, data } => {
+    let temp_path = {
+        let state = state.expect_lock("parallel state mutex poisoned");
+        download_chunk_temp_path(&state, meta.index)?
+    };
+
+    match receive_chunk_frame_to_file(stream, &temp_path).await? {
+        ReceivedChunkFrame::RawChunkFile(chunk) => {
+            if chunk.index != meta.index {
+                remove_file_if_exists(&temp_path);
+                return Err(NetworkError::UnexpectedChunkIndex {
+                    expected: meta.index,
+                    actual: chunk.index,
+                });
+            }
+
+            if chunk.blake3_hash != *meta.blake3_hash.as_bytes() {
+                remove_file_if_exists(&temp_path);
+                return Err(FileError::ChunkHashMismatch(meta.index).into());
+            }
+
+            let mut state = state.expect_lock("parallel state mutex poisoned");
+            persist_downloaded_chunk_file(&mut state, meta.index, &temp_path, output_dir)?;
+            Ok(chunk.data_len)
+        }
+        ReceivedChunkFrame::Message(WireMessage::Chunk { index, data }) => {
+            remove_file_if_exists(&temp_path);
             if index != meta.index {
                 return Err(NetworkError::UnexpectedChunkIndex {
                     expected: meta.index,
@@ -1845,13 +1864,23 @@ async fn request_chunk_from_peer(
                 return Err(FileError::ChunkHashMismatch(meta.index).into());
             }
 
-            Ok(EncryptedChunk { index, data })
+            let chunk_len = data.len();
+            let encrypted_chunk = EncryptedChunk { index, data };
+            let mut state = state.expect_lock("parallel state mutex poisoned");
+            persist_downloaded_chunk(&mut state, &encrypted_chunk, output_dir)?;
+            Ok(chunk_len)
         }
-        WireMessage::Error { message } => Err(NetworkError::PeerError(message)),
-        actual => Err(NetworkError::UnexpectedMessage {
-            expected: "Chunk",
-            actual,
-        }),
+        ReceivedChunkFrame::Message(WireMessage::Error { message }) => {
+            remove_file_if_exists(&temp_path);
+            Err(NetworkError::PeerError(message))
+        }
+        ReceivedChunkFrame::Message(actual) => {
+            remove_file_if_exists(&temp_path);
+            Err(NetworkError::UnexpectedMessage {
+                expected: "Chunk",
+                actual,
+            })
+        }
     }
 }
 
@@ -1925,8 +1954,65 @@ async fn download_missing_chunks_windowed(
             break;
         }
 
-        match receive_message(stream).await? {
-            WireMessage::Chunk { index, data } => {
+        let received = if streaming_to_library {
+            let temp_path = download_chunk_temp_path(library_state, 0)?;
+            receive_chunk_frame_to_file(stream, &temp_path)
+                .await
+                .map(|frame| (frame, Some(temp_path)))?
+        } else {
+            (ReceivedChunkFrame::Message(receive_message(stream).await?), None)
+        };
+
+        match received {
+            (ReceivedChunkFrame::RawChunkFile(chunk), Some(temp_path)) => {
+                let index = chunk.index;
+                let expected = in_flight.keys().next().copied().unwrap_or(index);
+                let meta = in_flight
+                    .remove(&index)
+                    .ok_or(NetworkError::UnexpectedChunkIndex {
+                        expected,
+                        actual: index,
+                    })?;
+
+                if chunk.blake3_hash != *meta.blake3_hash.as_bytes() {
+                    remove_file_if_exists(&temp_path);
+                    return Err(FileError::ChunkHashMismatch(meta.index).into());
+                }
+
+                let chunk_len = chunk.data_len;
+                persist_downloaded_chunk_file(
+                    library_state,
+                    index,
+                    &temp_path,
+                    output_state_dir.clone(),
+                )?;
+
+                completed_chunks.insert(index);
+
+                log_chunk_progress_for_share(
+                    share_id,
+                    "peer",
+                    "received+verified",
+                    log_level,
+                    completed_chunks.len(),
+                    total_chunks,
+                    index,
+                    chunk_len,
+                );
+
+                chunks_since_window_growth = chunks_since_window_growth.saturating_add(1);
+                maybe_grow_request_window(
+                    &mut active_request_window,
+                    &mut chunks_since_window_growth,
+                    max_request_window,
+                    log_level,
+                );
+            }
+            (ReceivedChunkFrame::Message(WireMessage::Chunk { index, data }), temp_path) => {
+                if let Some(temp_path) = temp_path {
+                    remove_file_if_exists(&temp_path);
+                }
+
                 let expected = in_flight.keys().next().copied().unwrap_or(index);
                 let meta = in_flight
                     .remove(&index)
@@ -1976,13 +2062,22 @@ async fn download_missing_chunks_windowed(
                     log_level,
                 );
             }
-            WireMessage::Error { message } => return Err(NetworkError::PeerError(message)),
-            actual => {
+            (ReceivedChunkFrame::Message(WireMessage::Error { message }), temp_path) => {
+                if let Some(temp_path) = temp_path {
+                    remove_file_if_exists(&temp_path);
+                }
+                return Err(NetworkError::PeerError(message));
+            }
+            (ReceivedChunkFrame::Message(actual), temp_path) => {
+                if let Some(temp_path) = temp_path {
+                    remove_file_if_exists(&temp_path);
+                }
                 return Err(NetworkError::UnexpectedMessage {
                     expected: "Chunk",
                     actual,
                 });
             }
+            (ReceivedChunkFrame::RawChunkFile(_), None) => unreachable!("raw chunk file requires a temporary path"),
         }
     }
 
@@ -2557,6 +2652,50 @@ fn default_decrypt_worker_count(total_chunks: usize) -> usize {
 struct DecryptedChunk {
     index: u32,
     data: Vec<u8>,
+}
+
+fn download_chunk_temp_path(
+    state: &Option<ActiveDownloadLibraryState>,
+    index: u32,
+) -> Result<PathBuf, NetworkError> {
+    let state = active_download_state(state)?;
+    let suffix = staging_timestamp();
+    Ok(state.paths.chunks_dir().join(format!(
+        "{index:06}.{}.{}.part",
+        crate::state::CHUNK_EXTENSION,
+        suffix
+    )))
+}
+
+fn persist_downloaded_chunk_file(
+    state: &mut Option<ActiveDownloadLibraryState>,
+    index: u32,
+    temp_path: &Path,
+    output_dir: Option<PathBuf>,
+) -> Result<(), NetworkError> {
+    let Some(state) = state else {
+        remove_file_if_exists(temp_path);
+        return Ok(());
+    };
+
+    fs::create_dir_all(state.paths.chunks_dir())?;
+    let final_path = state.paths.chunk_path(index);
+    if final_path.exists() {
+        fs::remove_file(&final_path)?;
+    }
+    fs::rename(temp_path, final_path)?;
+
+    state.progress.mark_completed(index);
+    state.dirty_chunks = state.dirty_chunks.saturating_add(1);
+    maybe_flush_download_progress(state, output_dir)?;
+
+    Ok(())
+}
+
+fn remove_file_if_exists(path: &Path) {
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn persist_downloaded_chunk(
