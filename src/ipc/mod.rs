@@ -12,4 +12,4 @@ pub use message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary};
 pub use path::{DEFAULT_IPC_SOCKET_FILE_NAME, default_ipc_socket_path, default_windows_pipe_name};
 #[cfg(unix)]
 pub use server::serve_ipc_once;
-pub use server::{handle_ipc_command, serve_ipc_forever};
+pub use server::{handle_ipc_command, publish_ipc_event, serve_ipc_forever};

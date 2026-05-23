@@ -94,6 +94,14 @@ pub enum IpcEvent {
         completed_chunks: usize,
         total_chunks: usize,
     },
+    TransferProgress {
+        share_id: ShareId,
+        completed_chunks: usize,
+        total_chunks: usize,
+        bytes_done: u64,
+        total_bytes: u64,
+        bytes_per_second: u64,
+    },
     TransferCompleted {
         share_id: ShareId,
         output: PathBuf,

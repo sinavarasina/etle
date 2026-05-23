@@ -2,7 +2,10 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
+
+use tokio::{io::AsyncWrite, sync::broadcast};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -12,7 +15,7 @@ use tokio::net::windows::named_pipe::ServerOptions;
 
 use crate::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId, manifest::Manifest},
-    ipc::{IpcCommand, IpcError, IpcResponse, IpcShareSummary},
+    ipc::{IpcCommand, IpcError, IpcEvent, IpcResponse, IpcShareSummary},
     network::{
         DownloadFileOptions, TransferLogLevel, add_file_to_library,
         download_file_from_peers_parallel_with_options, download_file_from_peers_with_options,
@@ -22,6 +25,57 @@ use crate::{
 
 #[cfg(any(unix, windows))]
 use crate::ipc::{receive_ipc_message, send_ipc_message};
+
+const IPC_EVENT_CHANNEL_CAPACITY: usize = 512;
+
+pub fn publish_ipc_event(event: IpcEvent) {
+    let _ = ipc_event_bus().send(event);
+}
+
+fn subscribe_ipc_events() -> broadcast::Receiver<IpcEvent> {
+    ipc_event_bus().subscribe()
+}
+
+fn ipc_event_bus() -> &'static broadcast::Sender<IpcEvent> {
+    static EVENT_BUS: OnceLock<broadcast::Sender<IpcEvent>> = OnceLock::new();
+    EVENT_BUS.get_or_init(|| {
+        let (sender, _receiver) = broadcast::channel(IPC_EVENT_CHANNEL_CAPACITY);
+        sender
+    })
+}
+
+async fn serve_ipc_event_subscription<W>(stream: &mut W) -> Result<(), IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut events = subscribe_ipc_events();
+
+    send_ipc_message(
+        stream,
+        &IpcResponse::Ack {
+            message: "event subscription started".to_string(),
+        },
+    )
+    .await?;
+
+    loop {
+        match events.recv().await {
+            Ok(event) => send_ipc_message(stream, &event).await?,
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                send_ipc_message(
+                    stream,
+                    &IpcEvent::Error {
+                        message: format!("event subscriber lagged; skipped {skipped} event(s)"),
+                    },
+                )
+                .await?;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+
+    Ok(())
+}
 
 #[cfg(unix)]
 pub async fn serve_ipc_forever(
@@ -80,6 +134,11 @@ pub async fn serve_ipc_once(
 ) -> Result<bool, IpcError> {
     let (mut stream, _) = listener.accept().await?;
     let command: IpcCommand = receive_ipc_message(&mut stream).await?;
+    if matches!(command, IpcCommand::SubscribeEvents) {
+        serve_ipc_event_subscription(&mut stream).await?;
+        return Ok(false);
+    }
+
     let should_shutdown = matches!(command, IpcCommand::Shutdown);
     let response = handle_ipc_command_async(command, library_root.as_ref()).await;
     send_ipc_message(&mut stream, &response).await?;
@@ -95,6 +154,11 @@ async fn serve_ipc_once_named_pipe(
     stream.connect().await?;
 
     let command: IpcCommand = receive_ipc_message(&mut stream).await?;
+    if matches!(command, IpcCommand::SubscribeEvents) {
+        serve_ipc_event_subscription(&mut stream).await?;
+        return Ok(false);
+    }
+
     let should_shutdown = matches!(command, IpcCommand::Shutdown);
     let response = handle_ipc_command_async(command, library_root).await;
     send_ipc_message(&mut stream, &response).await?;
@@ -125,8 +189,8 @@ pub fn handle_ipc_command(command: IpcCommand, library_root: &Path) -> IpcRespon
         IpcCommand::Pause { .. } | IpcCommand::Resume { .. } => IpcResponse::Error {
             message: "pause/resume control is not implemented yet".to_string(),
         },
-        IpcCommand::SubscribeEvents => IpcResponse::Error {
-            message: "event subscription is not implemented yet".to_string(),
+        IpcCommand::SubscribeEvents => IpcResponse::Ack {
+            message: "use a streaming IPC connection to subscribe to events".to_string(),
         },
     }
 }
@@ -177,6 +241,9 @@ fn queue_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Pat
     tokio::task::spawn_blocking(move || {
         match run_seed_file_command(input, chunk_size, &library_root) {
             IpcResponse::ShareAdded { share } => {
+                publish_ipc_event(IpcEvent::ShareUpdated {
+                    share: share.clone(),
+                });
                 println!("[daemon] seed job completed");
                 println!(
                     "[daemon] share {}  chunks={}/{}  key={}  name=\"{}\"",
@@ -187,7 +254,12 @@ fn queue_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Pat
                     share.name
                 );
             }
-            IpcResponse::Error { message } => eprintln!("[daemon] seed job failed: {message}"),
+            IpcResponse::Error { message } => {
+                publish_ipc_event(IpcEvent::Error {
+                    message: message.clone(),
+                });
+                eprintln!("[daemon] seed job failed: {message}");
+            }
             other => println!("[daemon] seed job finished: {other:?}"),
         }
     });
@@ -251,13 +323,22 @@ fn queue_download_command(
                 chunks,
                 ..
             } => {
+                publish_ipc_event(IpcEvent::TransferCompleted {
+                    share_id,
+                    output: output.clone(),
+                });
                 println!("[daemon] download job completed: {share_id}");
                 println!("[daemon] output: {}", output.display());
                 println!("[daemon] file: {file_name}");
                 println!("[daemon] file size: {file_size} bytes");
                 println!("[daemon] chunks: {chunks}");
             }
-            IpcResponse::Error { message } => eprintln!("[daemon] download job failed: {message}"),
+            IpcResponse::Error { message } => {
+                publish_ipc_event(IpcEvent::Error {
+                    message: message.clone(),
+                });
+                eprintln!("[daemon] download job failed: {message}");
+            }
             other => println!("[daemon] download job finished: {other:?}"),
         }
     });
