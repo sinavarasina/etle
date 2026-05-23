@@ -1,9 +1,9 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::{Ipv4Addr, SocketAddr}, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 
 use etle::{
-    discovery::{DEFAULT_DISCOVERY_PORT, serve_discovery_forever},
+    discovery::{DiscoveryOptions, DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, serve_discovery_forever_with_options},
     ipc::{default_ipc_socket_path, serve_ipc_forever},
     network::{ServeFileOptions, TransferLogLevel, bind_listener, serve_library_forever},
     state::{default_library_root, list_library_shares},
@@ -52,6 +52,10 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT)]
         discovery_port: u16,
 
+        /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR)]
+        discovery_multicast: Ipv4Addr,
+
         /// Disable LAN peer discovery.
         #[arg(long)]
         no_discovery: bool,
@@ -75,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
             ipc_socket,
             no_ipc,
             discovery_port,
+            discovery_multicast,
             no_discovery,
         } => {
             let library_root = library_root.unwrap_or_else(default_library_root);
@@ -88,13 +93,16 @@ async fn main() -> anyhow::Result<()> {
                 None
             } else {
                 println!("[daemon] discovery udp: 0.0.0.0:{discovery_port}");
+                println!("[daemon] discovery multicast: {discovery_multicast}");
                 let discovery_library_root = library_root.clone();
+                let discovery_options =
+                    DiscoveryOptions::new(discovery_port).with_multicast(discovery_multicast);
                 Some(tokio::spawn(async move {
-                    if let Err(error) = serve_discovery_forever(
+                    if let Err(error) = serve_discovery_forever_with_options(
                         discovery_library_root,
                         listen,
                         peer_id,
-                        discovery_port,
+                        discovery_options,
                     )
                     .await
                     {

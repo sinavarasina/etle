@@ -1,6 +1,6 @@
 use std::{
     fs,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::OnceLock,
     time::Duration,
@@ -15,7 +15,7 @@ use tokio::net::UnixListener;
 use tokio::net::windows::named_pipe::ServerOptions;
 
 use crate::{
-    discovery::discover_peers_for_share,
+    discovery::{DiscoveryOptions, discover_peers_for_share_with_options},
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId, manifest::Manifest},
     ipc::{IpcCommand, IpcError, IpcEvent, IpcResponse, IpcShareSummary},
     network::{
@@ -210,6 +210,8 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             parallelism,
             request_window,
             discovery_port,
+            discovery_timeout_ms,
+            discovery_multicast,
         } => queue_download_command(
             share_id,
             peers,
@@ -217,6 +219,8 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             parallelism,
             request_window,
             discovery_port,
+            discovery_timeout_ms,
+            discovery_multicast,
             true,
             library_root,
         ),
@@ -227,6 +231,8 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             parallelism,
             request_window,
             discovery_port,
+            discovery_timeout_ms,
+            discovery_multicast,
         } => queue_download_command(
             share_id,
             peers,
@@ -234,6 +240,8 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             parallelism,
             request_window,
             discovery_port,
+            discovery_timeout_ms,
+            discovery_multicast,
             false,
             library_root,
         ),
@@ -315,6 +323,8 @@ fn queue_download_command(
     parallelism: usize,
     request_window: usize,
     discovery_port: u16,
+    discovery_timeout_ms: u64,
+    discovery_multicast: Ipv4Addr,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -331,6 +341,8 @@ fn queue_download_command(
             parallelism,
             request_window,
             discovery_port,
+            discovery_timeout_ms,
+            discovery_multicast,
             resume,
             &library_root,
         )
@@ -377,6 +389,8 @@ async fn handle_download_command(
     parallelism: usize,
     request_window: usize,
     discovery_port: u16,
+    discovery_timeout_ms: u64,
+    discovery_multicast: Ipv4Addr,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -391,9 +405,13 @@ async fn handle_download_command(
 
     let peers = if peers.is_empty() {
         println!(
-            "[daemon] no --peer supplied; discovering peers for share {share_id} on UDP port {discovery_port}..."
+            "[daemon] no --peer supplied; discovering peers for share {share_id} on UDP port {discovery_port} for {discovery_timeout_ms} ms..."
         );
-        match discover_peers_for_share(share_id, discovery_port, Duration::from_secs(3)).await {
+        let discovery_options = DiscoveryOptions::new(discovery_port)
+            .with_timeout(Duration::from_millis(discovery_timeout_ms.max(1)))
+            .with_multicast(discovery_multicast);
+
+        match discover_peers_for_share_with_options(share_id, discovery_options).await {
             Ok(discovered) if !discovered.is_empty() => {
                 println!("[daemon] discovered {} peer(s)", discovered.len());
                 discovered

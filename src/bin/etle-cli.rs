@@ -1,12 +1,12 @@
 #[cfg(feature = "cli")]
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::{Ipv4Addr, SocketAddr}, path::PathBuf};
 
 #[cfg(feature = "cli")]
 use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cli")]
 use etle::{
-    discovery::DEFAULT_DISCOVERY_PORT,
+    discovery::{DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, DEFAULT_DISCOVERY_TIMEOUT_MS},
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
         IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, default_ipc_socket_path,
@@ -86,6 +86,14 @@ enum Command {
         /// UDP port used for LAN peer discovery when --peer is omitted.
         #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT)]
         discovery_port: u16,
+
+        /// LAN discovery timeout in milliseconds when --peer is omitted.
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_TIMEOUT_MS)]
+        discovery_timeout_ms: u64,
+
+        /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR)]
+        discovery_multicast: Ipv4Addr,
     },
 
     /// Send direct daemon control commands.
@@ -148,6 +156,8 @@ async fn main() -> anyhow::Result<()> {
             parallel,
             request_window,
             discovery_port,
+            discovery_timeout_ms,
+            discovery_multicast,
         } => {
             if no_resume {
                 IpcCommand::DownloadFresh {
@@ -157,6 +167,8 @@ async fn main() -> anyhow::Result<()> {
                     parallelism: parallel,
                     request_window,
                     discovery_port,
+                    discovery_timeout_ms,
+                    discovery_multicast,
                 }
             } else {
                 IpcCommand::Download {
@@ -166,6 +178,8 @@ async fn main() -> anyhow::Result<()> {
                     parallelism: parallel,
                     request_window,
                     discovery_port,
+                    discovery_timeout_ms,
+                    discovery_multicast,
                 }
             }
         }

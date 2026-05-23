@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{net::{Ipv4Addr, SocketAddr}, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,8 @@ pub enum IpcCommand {
         parallelism: usize,
         request_window: usize,
         discovery_port: u16,
+        discovery_timeout_ms: u64,
+        discovery_multicast: Ipv4Addr,
     },
     DownloadFresh {
         share_id: ShareId,
@@ -31,6 +33,8 @@ pub enum IpcCommand {
         parallelism: usize,
         request_window: usize,
         discovery_port: u16,
+        discovery_timeout_ms: u64,
+        discovery_multicast: Ipv4Addr,
     },
     Pause {
         share_id: ShareId,
