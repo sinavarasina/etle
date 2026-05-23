@@ -1,3 +1,5 @@
+use std::{fs::File, io::Read, path::Path};
+
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::protocol::{error::ProtocolError, message::WireMessage};
@@ -40,6 +42,53 @@ where
     }
 
     receive_bincode_frame_after_first_byte(reader, len, first[0]).await
+}
+
+pub async fn send_raw_chunk_file<W>(
+    writer: &mut W,
+    index: u32,
+    path: impl AsRef<Path>,
+    expected_size: u64,
+) -> Result<(), ProtocolError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut file = File::open(path.as_ref())?;
+    let actual_size = file.metadata()?.len();
+    if actual_size != expected_size {
+        return Err(ProtocolError::RawChunkSizeMismatch {
+            expected: expected_size as usize,
+            actual: actual_size as usize,
+        });
+    }
+
+    let data_len = usize::try_from(actual_size).map_err(|_| ProtocolError::FrameTooLarge {
+        len: usize::MAX,
+        max: MAX_FRAME_SIZE,
+    })?;
+    let frame_len = RAW_CHUNK_HEADER_SIZE.checked_add(data_len).ok_or(
+        ProtocolError::FrameTooLarge {
+            len: usize::MAX,
+            max: MAX_FRAME_SIZE,
+        },
+    )?;
+    validate_frame_len(frame_len)?;
+
+    writer.write_all(&(frame_len as u32).to_be_bytes()).await?;
+    writer.write_all(&[RAW_CHUNK_FRAME_TAG]).await?;
+    writer.write_all(&index.to_be_bytes()).await?;
+
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..read]).await?;
+    }
+
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn send_raw_chunk_frame<W>(

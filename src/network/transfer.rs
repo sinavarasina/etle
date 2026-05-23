@@ -31,7 +31,7 @@ use crate::{
         NetworkError, accept_peer, client_protocol_handshake, client_shared_secret_exchange,
         connect_peer, server_protocol_handshake, server_shared_secret_exchange,
     },
-    protocol::{ProtocolError, WireMessage, receive_message, send_message},
+    protocol::{ProtocolError, WireMessage, receive_message, send_message, send_raw_chunk_file},
     state::{
         DownloadProgress, LibraryPaths, ShareMode, ShareState, has_encrypted_chunk,
         initialize_share_library, read_descriptor, read_encrypted_chunk, read_progress,
@@ -770,16 +770,8 @@ async fn serve_library_connected_peer(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
-
-                send_message(
-                    &mut stream,
-                    &WireMessage::Chunk {
-                        index,
-                        data: chunk.data.clone(),
-                    },
-                )
-                .await?;
+                send_raw_chunk_file(&mut stream, index, paths.chunk_path(index), meta.encrypted_size)
+                    .await?;
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
@@ -790,7 +782,7 @@ async fn serve_library_connected_peer(
                     served_or_known.len(),
                     total_chunks,
                     index,
-                    chunk.data.len(),
+                    meta.encrypted_size as usize,
                 );
             }
             actual => {
@@ -941,16 +933,8 @@ async fn serve_library_share_connected_peer(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
-
-                send_message(
-                    &mut stream,
-                    &WireMessage::Chunk {
-                        index,
-                        data: chunk.data.clone(),
-                    },
-                )
-                .await?;
+                send_raw_chunk_file(&mut stream, index, paths.chunk_path(index), meta.encrypted_size)
+                    .await?;
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
@@ -961,7 +945,7 @@ async fn serve_library_share_connected_peer(
                     served_or_known.len(),
                     total_chunks,
                     index,
-                    chunk.data.len(),
+                    meta.encrypted_size as usize,
                 );
             }
             actual => {
@@ -1117,16 +1101,8 @@ pub async fn serve_library_to_one_peer_from_listener(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
-
-                send_message(
-                    &mut stream,
-                    &WireMessage::Chunk {
-                        index,
-                        data: chunk.data.clone(),
-                    },
-                )
-                .await?;
+                send_raw_chunk_file(&mut stream, index, paths.chunk_path(index), meta.encrypted_size)
+                    .await?;
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
@@ -1137,7 +1113,7 @@ pub async fn serve_library_to_one_peer_from_listener(
                     served_or_known.len(),
                     total_chunks,
                     index,
-                    chunk.data.len(),
+                    meta.encrypted_size as usize,
                 );
             }
             actual => {
