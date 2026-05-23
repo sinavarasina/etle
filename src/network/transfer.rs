@@ -4,7 +4,8 @@ use std::{
     io::{ErrorKind, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -1961,36 +1962,191 @@ fn decrypt_library_chunks_to_file(
     file_key: &SymmetricKey,
     output_path: &Path,
 ) -> Result<(), NetworkError> {
+    let worker_count = default_decrypt_worker_count(manifest.chunks.len());
+
+    if worker_count <= 1 {
+        return decrypt_library_chunks_to_file_sequential(paths, manifest, file_key, output_path);
+    }
+
+    decrypt_library_chunks_to_file_parallel(paths, manifest, file_key, output_path, worker_count)
+}
+
+fn decrypt_library_chunks_to_file_sequential(
+    paths: &LibraryPaths,
+    manifest: &Manifest,
+    file_key: &SymmetricKey,
+    output_path: &Path,
+) -> Result<(), NetworkError> {
+    prepare_output_file_parent(output_path)?;
+
+    let mut output = File::create(output_path)?;
+    let mut final_hasher = blake3::Hasher::new();
+
+    for meta in &manifest.chunks {
+        let decrypted = decrypt_library_chunk(paths, manifest.file_id, file_key, meta)?;
+        final_hasher.update(&decrypted.data);
+        output.write_all(&decrypted.data)?;
+    }
+
+    finalize_streamed_output(output, final_hasher, manifest.file_id)
+}
+
+fn decrypt_library_chunks_to_file_parallel(
+    paths: &LibraryPaths,
+    manifest: &Manifest,
+    file_key: &SymmetricKey,
+    output_path: &Path,
+    worker_count: usize,
+) -> Result<(), NetworkError> {
+    prepare_output_file_parent(output_path)?;
+
+    let mut output = File::create(output_path)?;
+    let mut final_hasher = blake3::Hasher::new();
+    let queue = Arc::new(Mutex::new(VecDeque::from(manifest.chunks.clone())));
+    let (tx, rx) = mpsc::sync_channel::<Result<DecryptedChunk, NetworkError>>(worker_count * 2);
+    let paths = paths.clone();
+    let file_id = manifest.file_id;
+    let file_key = *file_key;
+    let total_chunks = manifest.chunks.len();
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let tx = tx.clone();
+            let paths = paths.clone();
+
+            handles.push(scope.spawn(move || {
+                loop {
+                    let Some(meta) = queue
+                        .expect_lock("parallel decrypt queue mutex poisoned")
+                        .pop_front()
+                    else {
+                        break;
+                    };
+
+                    let result = decrypt_library_chunk(&paths, file_id, &file_key, &meta);
+                    if tx.send(result).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+
+        drop(tx);
+
+        let mut next_index = 0_u32;
+        let mut pending = BTreeMap::<u32, Vec<u8>>::new();
+        let mut first_error = None;
+
+        for _ in 0..total_chunks {
+            match rx.recv() {
+                Ok(Ok(decrypted)) if first_error.is_none() => {
+                    pending.insert(decrypted.index, decrypted.data);
+
+                    while let Some(data) = pending.remove(&next_index) {
+                        final_hasher.update(&data);
+                        output.write_all(&data)?;
+                        next_index = next_index.saturating_add(1);
+                    }
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+                Err(_) => {
+                    if first_error.is_none() {
+                        first_error = Some(NetworkError::PeerError(
+                            "parallel decrypt worker stopped unexpectedly".to_string(),
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+
+        for handle in handles {
+            handle.join().map_err(|_| {
+                NetworkError::PeerError("parallel decrypt worker panicked".to_string())
+            })?;
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        if !pending.is_empty() {
+            return Err(NetworkError::PeerError(
+                "parallel decrypt finished with unwritten chunks".to_string(),
+            ));
+        }
+
+        finalize_streamed_output(output, final_hasher, manifest.file_id)
+    })
+}
+
+fn decrypt_library_chunk(
+    paths: &LibraryPaths,
+    file_id: FileId,
+    file_key: &SymmetricKey,
+    meta: &ChunkMeta,
+) -> Result<DecryptedChunk, NetworkError> {
+    let chunk = read_encrypted_chunk(paths, meta.index, meta.encrypted_size)?;
+    let actual_hash = hash_chunk(&chunk.data);
+    if actual_hash != meta.blake3_hash {
+        return Err(FileError::ChunkHashMismatch(meta.index).into());
+    }
+
+    let aad = build_chunk_aad(file_id, meta.index, meta.plain_size);
+    let data = decrypt_chunk(file_key, meta.nonce, &chunk.data, &aad)?;
+
+    Ok(DecryptedChunk {
+        index: meta.index,
+        data,
+    })
+}
+
+fn prepare_output_file_parent(output_path: &Path) -> Result<(), NetworkError> {
     if let Some(parent) = output_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
         }
     }
 
-    let mut output = File::create(output_path)?;
-    let mut final_hasher = blake3::Hasher::new();
+    Ok(())
+}
 
-    for meta in &manifest.chunks {
-        let chunk = read_encrypted_chunk(paths, meta.index, meta.encrypted_size)?;
-        let actual_hash = hash_chunk(&chunk.data);
-        if actual_hash != meta.blake3_hash {
-            return Err(FileError::ChunkHashMismatch(meta.index).into());
-        }
-
-        let aad = build_chunk_aad(manifest.file_id, meta.index, meta.plain_size);
-        let plaintext = decrypt_chunk(file_key, meta.nonce, &chunk.data, &aad)?;
-        final_hasher.update(&plaintext);
-        output.write_all(&plaintext)?;
-    }
-
+fn finalize_streamed_output(
+    mut output: File,
+    final_hasher: blake3::Hasher,
+    expected_file_id: FileId,
+) -> Result<(), NetworkError> {
     output.flush()?;
 
     let final_hash = FileId(*final_hasher.finalize().as_bytes());
-    if final_hash != manifest.file_id {
+    if final_hash != expected_file_id {
         return Err(FileError::FinalHashMismatch.into());
     }
 
     Ok(())
+}
+
+fn default_decrypt_worker_count(total_chunks: usize) -> usize {
+    if total_chunks <= 1 {
+        return 1;
+    }
+
+    thread::available_parallelism()
+        .map_or(2, usize::from)
+        .min(4)
+        .min(total_chunks)
+}
+
+struct DecryptedChunk {
+    index: u32,
+    data: Vec<u8>,
 }
 
 fn persist_downloaded_chunk(
