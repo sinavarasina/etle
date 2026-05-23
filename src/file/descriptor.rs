@@ -55,8 +55,9 @@ impl FromStr for ShareId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CryptoSuite {
+    #[default]
     XChaCha20Poly1305Blake3X25519V1,
 }
 
@@ -69,11 +70,6 @@ impl CryptoSuite {
     }
 }
 
-impl Default for CryptoSuite {
-    fn default() -> Self {
-        Self::XChaCha20Poly1305Blake3X25519V1
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEntry {

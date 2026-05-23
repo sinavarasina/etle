@@ -1,3 +1,5 @@
+#![allow(clippy::collapsible_if, clippy::while_let_loop)]
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
@@ -46,11 +48,6 @@ pub enum TransferLogLevel {
 }
 
 impl TransferLogLevel {
-    #[must_use]
-    pub const fn i_normal(self) -> bool {
-        matches!(self, Self::Normal | Self::Verbose)
-    }
-
     #[must_use]
     pub const fn is_normal(self) -> bool {
         matches!(self, Self::Normal | Self::Verbose)
@@ -348,8 +345,8 @@ fn encrypt_file_to_staging_parallel(
                 let encrypted = result?;
                 staging_ref.write_chunk(encrypted.meta.index, &encrypted.ciphertext)?;
 
-                log_chunk_progress_with_context(
-                    None,
+                log_chunk_progress_with_label(
+                    &progress_context,
                     "daemon",
                     "staged+encrypted",
                     log_level,
@@ -462,8 +459,7 @@ fn encrypt_seed_chunk(
 fn default_seed_worker_count() -> usize {
     thread::available_parallelism()
         .map_or(2, usize::from)
-        .min(4)
-        .max(1)
+        .clamp(1, 4)
 }
 
 struct SeedPlainChunk {
@@ -1749,6 +1745,7 @@ async fn connect_download_peer(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn parallel_download_worker(
     progress_context: String,
     mut peer: ConnectedDownloadPeer,
@@ -1800,8 +1797,8 @@ async fn parallel_download_worker(
                     chunks.len()
                 };
 
-                log_chunk_progress_for_share(
-                    share_id,
+                log_chunk_progress_with_label(
+                    &progress_context,
                     "peer",
                     "parallel received+verified",
                     log_level,
@@ -1874,6 +1871,7 @@ async fn request_chunk_from_peer(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_missing_chunks_windowed(
     progress_context: &str,
     stream: &mut TcpStream,
@@ -1895,8 +1893,8 @@ async fn download_missing_chunks_windowed(
 
     for meta in &manifest.chunks {
         if completed_chunks.contains(&meta.index) {
-            log_chunk_progress_for_share(
-                share_id,
+            log_chunk_progress_with_label(
+                progress_context,
                 "peer",
                 "reused",
                 log_level,
@@ -1967,8 +1965,8 @@ async fn download_missing_chunks_windowed(
                     chunks.insert(index, encrypted_chunk);
                 }
 
-                log_chunk_progress_for_share(
-                    share_id,
+                log_chunk_progress_with_label(
+                    progress_context,
                     "peer",
                     "received+verified",
                     log_level,
@@ -2347,8 +2345,8 @@ fn decrypt_library_chunks_to_file_sequential(
         let decrypted_len = decrypted.data.len();
         final_hasher.update(&decrypted.data);
         output.write_all(&decrypted.data)?;
-        log_chunk_progress_with_context(
-            None,
+        log_chunk_progress_with_label(
+            &progress_context,
             "peer",
             "decrypted+written",
             log_level,
@@ -2423,8 +2421,8 @@ fn decrypt_library_chunks_to_file_parallel(
                         final_hasher.update(&data);
                         output.write_all(&data)?;
                         let done = (next_index as usize).saturating_add(1);
-                        log_chunk_progress_with_context(
-                            None,
+                        log_chunk_progress_with_label(
+                            &progress_context,
                             "peer",
                             "decrypted+written",
                             log_level,
@@ -2495,10 +2493,10 @@ fn decrypt_library_chunk(
 }
 
 fn prepare_output_file_parent(output_path: &Path) -> Result<(), NetworkError> {
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     Ok(())
@@ -2627,6 +2625,7 @@ pub fn log_chunk_progress(
     log_chunk_progress_with_context(None, role, action, log_level, done, total, index, bytes);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_chunk_progress_for_share(
     share_id: ShareId,
     role: &str,
@@ -2649,7 +2648,61 @@ fn log_chunk_progress_for_share(
     );
 }
 
+
+#[allow(clippy::too_many_arguments)]
+fn log_chunk_progress_with_label(
+    context: &str,
+    role: &str,
+    action: &str,
+    log_level: TransferLogLevel,
+    done: usize,
+    total: usize,
+    index: u32,
+    bytes: usize,
+) {
+    log_chunk_progress_with_context_label(
+        context.to_string(),
+        None,
+        role,
+        action,
+        log_level,
+        done,
+        total,
+        index,
+        bytes,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 fn log_chunk_progress_with_context(
+    share_id: Option<ShareId>,
+    role: &str,
+    action: &str,
+    log_level: TransferLogLevel,
+    done: usize,
+    total: usize,
+    index: u32,
+    bytes: usize,
+) {
+    let context = share_id
+        .map(|share_id| share_id.to_string())
+        .unwrap_or_else(|| "global".to_string());
+    log_chunk_progress_with_context_label(
+        context,
+        share_id,
+        role,
+        action,
+        log_level,
+        done,
+        total,
+        index,
+        bytes,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_chunk_progress_with_context_label(
+    context: String,
     share_id: Option<ShareId>,
     role: &str,
     action: &str,
@@ -2663,9 +2716,6 @@ fn log_chunk_progress_with_context(
         return;
     }
 
-    let context = share_id
-        .map(|share_id| share_id.to_string())
-        .unwrap_or_else(|| "global".to_string());
     let key = ProgressKey::new(context, role, action, total);
     let mut states = progress_states()
         .lock()
@@ -2694,7 +2744,6 @@ fn log_chunk_progress_with_context(
         index,
         bytes,
         state,
-        now,
         total_bytes,
         average_rate,
     );
@@ -2775,6 +2824,7 @@ fn should_log_progress(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn format_progress_line(
     role: &str,
     action: &str,
@@ -2783,7 +2833,6 @@ fn format_progress_line(
     index: u32,
     bytes: usize,
     state: &ProgressState,
-    now: Instant,
     total_bytes: u64,
     average_rate: f64,
 ) -> String {
