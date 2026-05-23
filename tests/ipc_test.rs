@@ -21,6 +21,8 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
         peers: vec![peer],
         output: Some(PathBuf::from("received.webm")),
         parallelism: 2,
+        request_window: 16,
+        discovery_port: 7003,
     };
 
     send_ipc_message(&mut client, &command).await.unwrap();

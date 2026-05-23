@@ -31,7 +31,10 @@ use crate::{
         NetworkError, accept_peer, client_protocol_handshake, client_shared_secret_exchange,
         connect_peer, server_protocol_handshake, server_shared_secret_exchange,
     },
-    protocol::{ProtocolError, WireMessage, receive_message, send_message, send_raw_chunk_file},
+    protocol::{
+        ProtocolError, ReceivedChunkFrame, WireMessage, receive_chunk_frame_to_file,
+        receive_message, send_message, send_raw_chunk_file,
+    },
     state::{
         DownloadProgress, LibraryPaths, ShareMode, ShareState, has_encrypted_chunk,
         initialize_share_library, read_descriptor, read_encrypted_chunk, read_progress,
@@ -1766,7 +1769,9 @@ async fn parallel_download_worker(
             continue;
         };
 
-        match request_chunk_from_peer_to_library(&mut peer.stream, meta, &state, output_dir.clone()).await {
+        match request_chunk_from_peer_to_library(&mut peer.stream, meta, &state, output_dir.clone())
+            .await
+        {
             Ok(chunk_len) => {
                 let done = {
                     let mut chunks = chunks.expect_lock("parallel chunk mutex poisoned");
@@ -1960,7 +1965,10 @@ async fn download_missing_chunks_windowed(
                 .await
                 .map(|frame| (frame, Some(temp_path)))?
         } else {
-            (ReceivedChunkFrame::Message(receive_message(stream).await?), None)
+            (
+                ReceivedChunkFrame::Message(receive_message(stream).await?),
+                None,
+            )
         };
 
         match received {
@@ -2077,7 +2085,9 @@ async fn download_missing_chunks_windowed(
                     actual,
                 });
             }
-            (ReceivedChunkFrame::RawChunkFile(_), None) => unreachable!("raw chunk file requires a temporary path"),
+            (ReceivedChunkFrame::RawChunkFile(_), None) => {
+                unreachable!("raw chunk file requires a temporary path")
+            }
         }
     }
 
@@ -2085,7 +2095,7 @@ async fn download_missing_chunks_windowed(
 }
 
 fn initial_request_window(max_request_window: usize) -> usize {
-    max_request_window.min(4).max(1)
+    max_request_window.clamp(1, 4)
 }
 
 fn maybe_grow_request_window(
@@ -2711,6 +2721,17 @@ fn persist_downloaded_chunk(
     state.progress.mark_completed(chunk.index);
     state.dirty_chunks = state.dirty_chunks.saturating_add(1);
 
+    if should_flush_download_progress(state) {
+        flush_download_progress(state, ShareMode::Downloading, output_dir)?;
+    }
+
+    Ok(())
+}
+
+fn maybe_flush_download_progress(
+    state: &mut ActiveDownloadLibraryState,
+    output_dir: Option<PathBuf>,
+) -> Result<(), NetworkError> {
     if should_flush_download_progress(state) {
         flush_download_progress(state, ShareMode::Downloading, output_dir)?;
     }

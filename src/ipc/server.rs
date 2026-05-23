@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::OnceLock,
+    time::Duration,
 };
 
 use tokio::{io::AsyncWrite, sync::broadcast};
@@ -14,6 +15,7 @@ use tokio::net::UnixListener;
 use tokio::net::windows::named_pipe::ServerOptions;
 
 use crate::{
+    discovery::discover_peers_for_share,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId, manifest::Manifest},
     ipc::{IpcCommand, IpcError, IpcEvent, IpcResponse, IpcShareSummary},
     network::{
@@ -207,12 +209,14 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             output,
             parallelism,
             request_window,
+            discovery_port,
         } => queue_download_command(
             share_id,
             peers,
             output,
             parallelism,
             request_window,
+            discovery_port,
             true,
             library_root,
         ),
@@ -222,12 +226,14 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             output,
             parallelism,
             request_window,
+            discovery_port,
         } => queue_download_command(
             share_id,
             peers,
             output,
             parallelism,
             request_window,
+            discovery_port,
             false,
             library_root,
         ),
@@ -301,12 +307,14 @@ fn generate_job_id(prefix: &str, share_id: ShareId) -> String {
     format!("{prefix}-{share_id}-{millis}-{}", std::process::id())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn queue_download_command(
     share_id: ShareId,
     peers: Vec<SocketAddr>,
     output: Option<PathBuf>,
     parallelism: usize,
     request_window: usize,
+    discovery_port: u16,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -322,6 +330,7 @@ fn queue_download_command(
             output,
             parallelism,
             request_window,
+            discovery_port,
             resume,
             &library_root,
         )
@@ -360,12 +369,14 @@ fn queue_download_command(
     IpcResponse::TransferQueued { share_id, job_id }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_download_command(
     share_id: ShareId,
     peers: Vec<SocketAddr>,
     output: Option<PathBuf>,
     parallelism: usize,
     request_window: usize,
+    discovery_port: u16,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -377,6 +388,32 @@ async fn handle_download_command(
             message: error.to_string(),
         };
     }
+
+    let peers = if peers.is_empty() {
+        println!(
+            "[daemon] no --peer supplied; discovering peers for share {share_id} on UDP port {discovery_port}..."
+        );
+        match discover_peers_for_share(share_id, discovery_port, Duration::from_secs(3)).await {
+            Ok(discovered) if !discovered.is_empty() => {
+                println!("[daemon] discovered {} peer(s)", discovered.len());
+                discovered
+            }
+            Ok(_) => {
+                return IpcResponse::Error {
+                    message: format!(
+                        "no peers discovered for share {share_id}; pass --peer manually or ensure etled discovery is enabled on the LAN"
+                    ),
+                };
+            }
+            Err(error) => {
+                return IpcResponse::Error {
+                    message: format!("peer discovery failed: {error}"),
+                };
+            }
+        }
+    } else {
+        peers
+    };
 
     let options = DownloadFileOptions::new("etle-daemon", TransferLogLevel::Normal)
         .with_library_root(library_root.to_path_buf())

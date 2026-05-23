@@ -22,6 +22,7 @@ pub enum IpcCommand {
         output: Option<PathBuf>,
         parallelism: usize,
         request_window: usize,
+        discovery_port: u16,
     },
     DownloadFresh {
         share_id: ShareId,
@@ -29,6 +30,7 @@ pub enum IpcCommand {
         output: Option<PathBuf>,
         parallelism: usize,
         request_window: usize,
+        discovery_port: u16,
     },
     Pause {
         share_id: ShareId,

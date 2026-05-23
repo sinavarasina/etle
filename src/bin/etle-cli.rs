@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cli")]
 use etle::{
+    discovery::DEFAULT_DISCOVERY_PORT,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
         IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, default_ipc_socket_path,
@@ -53,7 +54,8 @@ enum Command {
     /// Ask etled to download a share from one or more peers.
     Download {
         /// Seeder peer address. Can be repeated for fallback or parallel download.
-        #[arg(long, required = true)]
+        /// If omitted, etled will try LAN auto-discovery for the requested share.
+        #[arg(long)]
         peer: Vec<SocketAddr>,
 
         /// Share ID to request from a multi-share library server.
@@ -80,6 +82,10 @@ enum Command {
         /// Number of chunk requests kept in flight per peer connection.
         #[arg(long, default_value_t = 16)]
         request_window: usize,
+
+        /// UDP port used for LAN peer discovery when --peer is omitted.
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT)]
+        discovery_port: u16,
     },
 
     /// Send direct daemon control commands.
@@ -141,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
             no_resume,
             parallel,
             request_window,
+            discovery_port,
         } => {
             if no_resume {
                 IpcCommand::DownloadFresh {
@@ -149,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
                     output,
                     parallelism: parallel,
                     request_window,
+                    discovery_port,
                 }
             } else {
                 IpcCommand::Download {
@@ -157,6 +165,7 @@ async fn main() -> anyhow::Result<()> {
                     output,
                     parallelism: parallel,
                     request_window,
+                    discovery_port,
                 }
             }
         }

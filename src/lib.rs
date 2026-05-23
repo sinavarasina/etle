@@ -1,5 +1,6 @@
 pub mod app;
 pub mod crypto;
+pub mod discovery;
 pub mod file;
 pub mod gui;
 pub mod ipc;
