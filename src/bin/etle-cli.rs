@@ -1,12 +1,17 @@
 #[cfg(feature = "cli")]
-use std::{net::{Ipv4Addr, SocketAddr}, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 #[cfg(feature = "cli")]
 use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cli")]
 use etle::{
-    discovery::{DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, DEFAULT_DISCOVERY_TIMEOUT_MS},
+    discovery::{
+        DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, DEFAULT_DISCOVERY_TIMEOUT_MS,
+    },
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
         IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, default_ipc_socket_path,

@@ -1,9 +1,15 @@
-use std::{net::{Ipv4Addr, SocketAddr}, path::PathBuf};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 use clap::{Parser, Subcommand};
 
 use etle::{
-    discovery::{DiscoveryOptions, DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, serve_discovery_forever_with_options},
+    discovery::{
+        DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, DiscoveryOptions,
+        serve_discovery_forever_with_options,
+    },
     ipc::{default_ipc_socket_path, serve_ipc_forever},
     network::{ServeFileOptions, TransferLogLevel, bind_listener, serve_library_forever},
     state::{default_library_root, list_library_shares},

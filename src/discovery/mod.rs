@@ -210,10 +210,10 @@ pub fn discovery_query_targets(port: u16, multicast: Option<Ipv4Addr>) -> Vec<So
     targets.insert(SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), port));
     targets.insert(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
 
-    if let Some(multicast) = multicast {
-        if multicast.is_multicast() {
-            targets.insert(SocketAddr::new(IpAddr::V4(multicast), port));
-        }
+    if let Some(multicast) = multicast
+        && multicast.is_multicast()
+    {
+        targets.insert(SocketAddr::new(IpAddr::V4(multicast), port));
     }
 
     for interface in active_ipv4_interfaces().unwrap_or_default() {
