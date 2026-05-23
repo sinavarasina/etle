@@ -25,8 +25,8 @@ use crate::{
         storage::{EncryptedChunk, EncryptedFile, decrypt_to_file},
     },
     network::{
-        NetworkError, accept_peer, client_hello_handshake, client_shared_secret_exchange,
-        connect_peer, server_hello_handshake, server_shared_secret_exchange,
+        NetworkError, accept_peer, client_protocol_handshake, client_shared_secret_exchange,
+        connect_peer, server_protocol_handshake, server_shared_secret_exchange,
     },
     protocol::{ProtocolError, WireMessage, receive_message, send_message},
     state::{
@@ -644,7 +644,7 @@ async fn serve_library_connected_peer(
         println!("[seeder] peer connected: {peer_addr}");
     }
 
-    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
+    let remote_peer_id = server_protocol_handshake(&mut stream, seeder_id).await?;
     if log_level.is_normal() {
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
@@ -841,7 +841,7 @@ async fn serve_library_share_connected_peer(
         );
     }
 
-    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
+    let remote_peer_id = server_protocol_handshake(&mut stream, seeder_id).await?;
     if log_level.is_normal() {
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
@@ -968,7 +968,7 @@ async fn serve_library_share_connected_peer(
     Ok(descriptor)
 }
 
-async fn serve_library_to_one_peer_from_listener(
+pub async fn serve_library_to_one_peer_from_listener(
     listener: &TcpListener,
     library_root: impl AsRef<Path>,
     options: ServeFileOptions,
@@ -985,7 +985,7 @@ async fn serve_library_to_one_peer_from_listener(
         println!("[seeder] peer connected: {peer_addr}");
     }
 
-    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
+    let remote_peer_id = server_protocol_handshake(&mut stream, seeder_id).await?;
     if log_level.is_normal() {
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
@@ -1459,7 +1459,7 @@ pub async fn download_file_from_peer_with_options(
         println!("[peer] connected to {peer_addr}");
     }
 
-    let remote_peer_id = client_hello_handshake(&mut stream, peer_id).await?;
+    let remote_peer_id = client_protocol_handshake(&mut stream, peer_id).await?;
     if log_level.is_normal() {
         println!("[peer] hello handshake completed with {remote_peer_id}");
     }
@@ -1656,7 +1656,7 @@ async fn connect_download_peer(
         println!("[peer] connected to {peer_addr}");
     }
 
-    let remote_peer_id = client_hello_handshake(&mut stream, peer_id).await?;
+    let remote_peer_id = client_protocol_handshake(&mut stream, peer_id).await?;
     if log_level.is_normal() {
         println!("[peer] hello handshake completed with {remote_peer_id}");
     }
@@ -2276,14 +2276,15 @@ fn decrypt_library_chunks_to_file(
         );
     }
 
-    decrypt_library_chunks_to_file_parallel(
+    let _ = decrypt_library_chunks_to_file_parallel(
         paths,
         manifest,
         file_key,
         output_path,
         worker_count,
         log_level,
-    )
+    );
+    Ok(())
 }
 
 fn decrypt_library_chunks_to_file_sequential(

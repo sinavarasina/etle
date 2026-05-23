@@ -43,6 +43,12 @@ pub enum NetworkError {
     )]
     AllPeersFailed { attempts: usize, last_error: String },
 
+    #[error("unsupported peer protocol version: peer={peer}, supported={supported}")]
+    UnsupportedProtocolVersion { peer: u16, supported: u16 },
+
+    #[error("peer is missing required capability: {0}")]
+    MissingPeerCapability(String),
+
     #[error("peer error: {0}")]
     PeerError(String),
 }

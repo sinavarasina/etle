@@ -5,7 +5,10 @@ pub mod tcp;
 pub mod transfer;
 
 pub use error::NetworkError;
-pub use handshake::{client_hello_handshake, server_hello_handshake};
+pub use handshake::{
+    client_hello_handshake, client_protocol_handshake, server_hello_handshake,
+    server_protocol_handshake,
+};
 pub use key_exchange::{
     client_key_exchange, client_shared_secret_exchange, server_key_exchange,
     server_shared_secret_exchange,
