@@ -7,7 +7,10 @@ use clap::{Parser, Subcommand};
 #[cfg(feature = "cli")]
 use etle::{
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
-    ipc::{IpcCommand, IpcResponse, IpcShareSummary, default_ipc_socket_path, send_ipc_command},
+    ipc::{
+        IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, default_ipc_socket_path,
+        send_ipc_command, subscribe_ipc_events,
+    },
     state::default_library_root,
 };
 
@@ -97,6 +100,9 @@ enum DaemonCommand {
 
     /// Ask etled to shut down.
     Shutdown,
+
+    /// Stream daemon events and transfer progress.
+    Watch,
 }
 
 #[cfg(feature = "cli")]
@@ -109,6 +115,16 @@ async fn main() -> anyhow::Result<()> {
 
     if cli.verbose {
         println!("[cli] ipc socket: {}", socket_path.display());
+    }
+
+    if matches!(
+        &cli.command,
+        Command::Daemon {
+            command: DaemonCommand::Watch
+        }
+    ) {
+        subscribe_ipc_events(&socket_path, print_event).await?;
+        return Ok(());
     }
 
     let command = match cli.command {
@@ -148,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
             DaemonCommand::Ping => IpcCommand::Ping,
             DaemonCommand::List => IpcCommand::ListShares,
             DaemonCommand::Shutdown => IpcCommand::Shutdown,
+            DaemonCommand::Watch => IpcCommand::SubscribeEvents,
         },
     };
 
@@ -215,6 +232,41 @@ fn print_response(response: IpcResponse) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn print_event(event: IpcEvent) {
+    match event {
+        IpcEvent::ServerStarted { listen } => println!("[event] server started: {listen}"),
+        IpcEvent::ServerStopped => println!("[event] server stopped"),
+        IpcEvent::ShareUpdated { share } => {
+            println!("[event] share updated");
+            print_share(&share);
+        }
+        IpcEvent::PeerConnected { peer_id } => println!("[event] peer connected: {peer_id}"),
+        IpcEvent::ChunkCompleted {
+            share_id,
+            completed_chunks,
+            total_chunks,
+        } => {
+            println!("[event] chunk completed: {share_id} chunks={completed_chunks}/{total_chunks}")
+        }
+        IpcEvent::TransferProgress {
+            share_id,
+            completed_chunks,
+            total_chunks,
+            bytes_done,
+            total_bytes,
+            bytes_per_second,
+        } => println!(
+            "[event] progress: {share_id} chunks={completed_chunks}/{total_chunks} bytes={bytes_done}/{total_bytes} speed={bytes_per_second} B/s"
+        ),
+        IpcEvent::TransferCompleted { share_id, output } => println!(
+            "[event] transfer completed: {share_id} output={}",
+            output.display()
+        ),
+        IpcEvent::Error { message } => eprintln!("[event] error: {message}"),
+    }
 }
 
 #[cfg(not(feature = "cli"))]

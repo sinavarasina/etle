@@ -24,6 +24,7 @@ use crate::{
         manifest::{ChunkMeta, Manifest},
         storage::{EncryptedChunk, EncryptedFile, decrypt_to_file},
     },
+    ipc::{IpcEvent, publish_ipc_event},
     network::{
         NetworkError, accept_peer, client_protocol_handshake, client_shared_secret_exchange,
         connect_peer, server_protocol_handshake, server_shared_secret_exchange,
@@ -45,6 +46,11 @@ pub enum TransferLogLevel {
 }
 
 impl TransferLogLevel {
+    #[must_use]
+    pub const fn i_normal(self) -> bool {
+        matches!(self, Self::Normal | Self::Verbose)
+    }
+
     #[must_use]
     pub const fn is_normal(self) -> bool {
         matches!(self, Self::Normal | Self::Verbose)
@@ -127,7 +133,6 @@ impl DownloadFileOptions {
         self
     }
 }
-
 
 const STAGING_DIR_NAME: &str = "staging";
 const DEFAULT_REQUEST_WINDOW: usize = 16;
@@ -344,7 +349,7 @@ fn encrypt_file_to_staging_parallel(
                 staging_ref.write_chunk(encrypted.meta.index, &encrypted.ciphertext)?;
 
                 log_chunk_progress_with_context(
-                    &progress_context,
+                    None,
                     "daemon",
                     "staged+encrypted",
                     log_level,
@@ -732,7 +737,6 @@ async fn serve_library_connected_peer(
     }
 
     let mut served_or_known = BTreeSet::new();
-    let progress_context = descriptor.share_id.to_string();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -783,7 +787,7 @@ async fn serve_library_connected_peer(
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
-                    &progress_context,
+                    Some(share_id),
                     "seeder",
                     "served-from-library",
                     log_level,
@@ -904,7 +908,6 @@ async fn serve_library_share_connected_peer(
     }
 
     let mut served_or_known = BTreeSet::new();
-    let progress_context = descriptor.share_id.to_string();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -955,7 +958,7 @@ async fn serve_library_share_connected_peer(
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
-                    &progress_context,
+                    Some(share_id),
                     "seeder",
                     "served-from-state",
                     log_level,
@@ -1073,7 +1076,6 @@ pub async fn serve_library_to_one_peer_from_listener(
     }
 
     let mut served_or_known = BTreeSet::new();
-    let progress_context = descriptor.share_id.to_string();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -1132,7 +1134,7 @@ pub async fn serve_library_to_one_peer_from_listener(
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
-                    &progress_context,
+                    Some(share_id),
                     "seeder",
                     "served-from-library",
                     log_level,
@@ -1362,6 +1364,7 @@ pub async fn download_file_from_peers_parallel_with_options(
     let queue = Arc::new(Mutex::new(missing_chunks));
     let completed_chunks = Arc::new(Mutex::new(completed_chunks));
     let state = Arc::new(Mutex::new(library_state));
+    let share_id = descriptor.share_id;
     let manifest = Arc::new(manifest);
 
     let mut handles = Vec::with_capacity(connected_peers.len());
@@ -1384,6 +1387,7 @@ pub async fn download_file_from_peers_parallel_with_options(
                 state,
                 output_state_dir,
                 log_level,
+                share_id,
             )
             .await
         }));
@@ -1597,6 +1601,7 @@ pub async fn download_file_from_peer_with_options(
         output_state_dir.clone(),
         log_level,
         request_window,
+        descriptor.share_id,
     )
     .await?;
 
@@ -1753,6 +1758,7 @@ async fn parallel_download_worker(
     state: Arc<Mutex<Option<ActiveDownloadLibraryState>>>,
     output_dir: Option<PathBuf>,
     log_level: TransferLogLevel,
+    share_id: ShareId,
 ) -> Result<(), NetworkError> {
     let initial_have = {
         let chunks = chunks.expect_lock("parallel chunk mutex poisoned");
@@ -1794,8 +1800,8 @@ async fn parallel_download_worker(
                     chunks.len()
                 };
 
-                log_chunk_progress_with_context(
-                    &progress_context,
+                log_chunk_progress_for_share(
+                    share_id,
                     "peer",
                     "parallel received+verified",
                     log_level,
@@ -1880,6 +1886,7 @@ async fn download_missing_chunks_windowed(
     output_state_dir: Option<PathBuf>,
     log_level: TransferLogLevel,
     request_window: usize,
+    share_id: ShareId,
 ) -> Result<(), NetworkError> {
     let request_window = request_window.max(1);
     let total_chunks = manifest.chunks.len();
@@ -1888,8 +1895,8 @@ async fn download_missing_chunks_windowed(
 
     for meta in &manifest.chunks {
         if completed_chunks.contains(&meta.index) {
-            log_chunk_progress_with_context(
-                progress_context,
+            log_chunk_progress_for_share(
+                share_id,
                 "peer",
                 "reused",
                 log_level,
@@ -1960,8 +1967,8 @@ async fn download_missing_chunks_windowed(
                     chunks.insert(index, encrypted_chunk);
                 }
 
-                log_chunk_progress_with_context(
-                    progress_context,
+                log_chunk_progress_for_share(
+                    share_id,
                     "peer",
                     "received+verified",
                     log_level,
@@ -2341,7 +2348,7 @@ fn decrypt_library_chunks_to_file_sequential(
         final_hasher.update(&decrypted.data);
         output.write_all(&decrypted.data)?;
         log_chunk_progress_with_context(
-            &progress_context,
+            None,
             "peer",
             "decrypted+written",
             log_level,
@@ -2417,7 +2424,7 @@ fn decrypt_library_chunks_to_file_parallel(
                         output.write_all(&data)?;
                         let done = (next_index as usize).saturating_add(1);
                         log_chunk_progress_with_context(
-                            &progress_context,
+                            None,
                             "peer",
                             "decrypted+written",
                             log_level,
@@ -2617,11 +2624,33 @@ pub fn log_chunk_progress(
     index: u32,
     bytes: usize,
 ) {
-    log_chunk_progress_with_context("global", role, action, log_level, done, total, index, bytes);
+    log_chunk_progress_with_context(None, role, action, log_level, done, total, index, bytes);
+}
+
+fn log_chunk_progress_for_share(
+    share_id: ShareId,
+    role: &str,
+    action: &str,
+    log_level: TransferLogLevel,
+    done: usize,
+    total: usize,
+    index: u32,
+    bytes: usize,
+) {
+    log_chunk_progress_with_context(
+        Some(share_id),
+        role,
+        action,
+        log_level,
+        done,
+        total,
+        index,
+        bytes,
+    );
 }
 
 fn log_chunk_progress_with_context(
-    context: &str,
+    share_id: Option<ShareId>,
     role: &str,
     action: &str,
     log_level: TransferLogLevel,
@@ -2634,6 +2663,9 @@ fn log_chunk_progress_with_context(
         return;
     }
 
+    let context = share_id
+        .map(|share_id| share_id.to_string())
+        .unwrap_or_else(|| "global".to_string());
     let key = ProgressKey::new(context, role, action, total);
     let mut states = progress_states()
         .lock()
@@ -2652,8 +2684,32 @@ fn log_chunk_progress_with_context(
         return;
     }
 
-    let line = format_progress_line(role, action, done, total, index, bytes, state, now);
+    let total_bytes = estimated_total_bytes(state.bytes_done, done, total);
+    let average_rate = bytes_per_second(state.bytes_done, now.duration_since(state.start));
+    let line = format_progress_line(
+        role,
+        action,
+        done,
+        total,
+        index,
+        bytes,
+        state,
+        now,
+        total_bytes,
+        average_rate,
+    );
     state.last_log = now;
+
+    if let Some(share_id) = share_id {
+        publish_ipc_event(IpcEvent::TransferProgress {
+            share_id,
+            completed_chunks: done,
+            total_chunks: total,
+            bytes_done: state.bytes_done,
+            total_bytes,
+            bytes_per_second: average_rate as u64,
+        });
+    }
 
     if done >= total {
         states.remove(&key);
@@ -2676,9 +2732,9 @@ struct ProgressKey {
 }
 
 impl ProgressKey {
-    fn new(context: &str, role: &str, action: &str, total: usize) -> Self {
+    fn new(context: String, role: &str, action: &str, total: usize) -> Self {
         Self {
-            context: context.to_string(),
+            context,
             role: role.to_string(),
             action: action.to_string(),
             total,
@@ -2728,11 +2784,10 @@ fn format_progress_line(
     bytes: usize,
     state: &ProgressState,
     now: Instant,
+    total_bytes: u64,
+    average_rate: f64,
 ) -> String {
-    let total_bytes = estimated_total_bytes(state.bytes_done, done, total);
     let percent = progress_percent_bytes(state.bytes_done, total_bytes);
-    let elapsed = now.duration_since(state.start);
-    let average_rate = bytes_per_second(state.bytes_done, elapsed);
     let eta = estimate_eta(state.bytes_done, total_bytes, average_rate);
 
     format!(
