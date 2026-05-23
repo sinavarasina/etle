@@ -141,13 +141,31 @@ pub async fn handle_ipc_command_async(command: IpcCommand, library_root: &Path) 
             peers,
             output,
             parallelism,
-        } => queue_download_command(share_id, peers, output, parallelism, true, library_root),
+            request_window,
+        } => queue_download_command(
+            share_id,
+            peers,
+            output,
+            parallelism,
+            request_window,
+            true,
+            library_root,
+        ),
         IpcCommand::DownloadFresh {
             share_id,
             peers,
             output,
             parallelism,
-        } => queue_download_command(share_id, peers, output, parallelism, false, library_root),
+            request_window,
+        } => queue_download_command(
+            share_id,
+            peers,
+            output,
+            parallelism,
+            request_window,
+            false,
+            library_root,
+        ),
         command => handle_ipc_command(command, library_root),
     }
 }
@@ -208,14 +226,23 @@ fn queue_download_command(
     peers: Vec<SocketAddr>,
     output: Option<PathBuf>,
     parallelism: usize,
+    request_window: usize,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
     let library_root = library_root.to_path_buf();
 
     tokio::spawn(async move {
-        match handle_download_command(share_id, peers, output, parallelism, resume, &library_root)
-            .await
+        match handle_download_command(
+            share_id,
+            peers,
+            output,
+            parallelism,
+            request_window,
+            resume,
+            &library_root,
+        )
+        .await
         {
             IpcResponse::TransferCompleted {
                 output,
@@ -243,6 +270,7 @@ async fn handle_download_command(
     peers: Vec<SocketAddr>,
     output: Option<PathBuf>,
     parallelism: usize,
+    request_window: usize,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -258,7 +286,8 @@ async fn handle_download_command(
     let options = DownloadFileOptions::new("etle-daemon", TransferLogLevel::Normal)
         .with_library_root(library_root.to_path_buf())
         .with_resume(resume)
-        .with_requested_share_id(Some(share_id));
+        .with_requested_share_id(Some(share_id))
+        .with_request_window(request_window);
 
     let result = if parallelism > 1 {
         download_file_from_peers_parallel_with_options(peers, &output_path, options, parallelism)

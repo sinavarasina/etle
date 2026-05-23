@@ -21,12 +21,14 @@ pub enum IpcCommand {
         peers: Vec<SocketAddr>,
         output: Option<PathBuf>,
         parallelism: usize,
+        request_window: usize,
     },
     DownloadFresh {
         share_id: ShareId,
         peers: Vec<SocketAddr>,
         output: Option<PathBuf>,
         parallelism: usize,
+        request_window: usize,
     },
     Pause {
         share_id: ShareId,

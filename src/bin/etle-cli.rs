@@ -73,6 +73,10 @@ enum Command {
         /// Number of parallel peer workers for multi-peer download.
         #[arg(long, default_value_t = 1)]
         parallel: usize,
+
+        /// Number of chunk requests kept in flight per peer connection.
+        #[arg(long, default_value_t = 16)]
+        request_window: usize,
     },
 
     /// Send direct daemon control commands.
@@ -120,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
             resume: _,
             no_resume,
             parallel,
+            request_window,
         } => {
             if no_resume {
                 IpcCommand::DownloadFresh {
@@ -127,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
                     peers: peer,
                     output,
                     parallelism: parallel,
+                    request_window,
                 }
             } else {
                 IpcCommand::Download {
@@ -134,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
                     peers: peer,
                     output,
                     parallelism: parallel,
+                    request_window,
                 }
             }
         }

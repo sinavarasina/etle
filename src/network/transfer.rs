@@ -87,6 +87,7 @@ pub struct DownloadFileOptions {
     pub library_root: Option<PathBuf>,
     pub resume: bool,
     pub requested_share_id: Option<ShareId>,
+    pub request_window: usize,
 }
 
 impl DownloadFileOptions {
@@ -98,6 +99,7 @@ impl DownloadFileOptions {
             library_root: None,
             resume: true,
             requested_share_id: None,
+            request_window: DEFAULT_REQUEST_WINDOW,
         }
     }
 
@@ -118,7 +120,14 @@ impl DownloadFileOptions {
         self.requested_share_id = share_id;
         self
     }
+
+    #[must_use]
+    pub const fn with_request_window(mut self, request_window: usize) -> Self {
+        self.request_window = request_window;
+        self
+    }
 }
+
 
 const STAGING_DIR_NAME: &str = "staging";
 const DEFAULT_REQUEST_WINDOW: usize = 16;
@@ -1451,6 +1460,7 @@ pub async fn download_file_from_peer_with_options(
         library_root,
         resume,
         requested_share_id,
+        request_window,
     } = options;
     let output_path = output_path.as_ref();
     let mut stream = connect_peer(peer_addr).await?;
@@ -1574,6 +1584,7 @@ pub async fn download_file_from_peer_with_options(
         streaming_to_library,
         output_state_dir.clone(),
         log_level,
+        request_window,
     )
     .await?;
 
@@ -1848,7 +1859,9 @@ async fn download_missing_chunks_windowed(
     streaming_to_library: bool,
     output_state_dir: Option<PathBuf>,
     log_level: TransferLogLevel,
+    request_window: usize,
 ) -> Result<(), NetworkError> {
+    let request_window = request_window.max(1);
     let total_chunks = manifest.chunks.len();
     let mut next_meta = 0_usize;
     let mut in_flight = BTreeMap::<u32, ChunkMeta>::new();
@@ -1869,7 +1882,7 @@ async fn download_missing_chunks_windowed(
     }
 
     loop {
-        while in_flight.len() < DEFAULT_REQUEST_WINDOW && next_meta < manifest.chunks.len() {
+        while in_flight.len() < request_window && next_meta < manifest.chunks.len() {
             let meta = &manifest.chunks[next_meta];
             next_meta += 1;
 
