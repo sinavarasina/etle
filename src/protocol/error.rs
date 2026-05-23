@@ -25,4 +25,7 @@ pub enum ProtocolError {
 
     #[error("protocol frame has trailing bytes: decoded {bytes_read} bytes from {frame_len} bytes")]
     TrailingBytes { bytes_read: usize, frame_len: usize },
+
+    #[error("invalid raw chunk frame: {0}")]
+    InvalidRawChunkFrame(&'static str),
 }

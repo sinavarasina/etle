@@ -4,15 +4,15 @@ use crate::protocol::{error::ProtocolError, message::WireMessage};
 
 /// Maximum serialized protocol frame size.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024;
-const RAW_CHUNK_MAGIC: &[u8; 8] = b"ETLECHK1";
-const RAW_CHUNK_HEADER_LEN: usize = RAW_CHUNK_MAGIC.len() + 4 + 8;
+const RAW_CHUNK_FRAME_TAG: u8 = 0xec;
+const RAW_CHUNK_HEADER_SIZE: usize = 1 + 4;
 
 pub async fn send_message<W>(writer: &mut W, message: &WireMessage) -> Result<(), ProtocolError>
 where
     W: AsyncWrite + Unpin,
 {
     if let WireMessage::Chunk { index, data } = message {
-        return send_raw_chunk_message(writer, *index, data).await;
+        return send_raw_chunk_frame(writer, *index, data).await;
     }
 
     let payload = bincode::serde::encode_to_vec(message, bincode::config::standard())?;
@@ -27,7 +27,22 @@ where
     Ok(())
 }
 
-async fn send_raw_chunk_message<W>(
+pub async fn receive_message<R>(reader: &mut R) -> Result<WireMessage, ProtocolError>
+where
+    R: AsyncRead + Unpin,
+{
+    let len = read_frame_len(reader).await?;
+    let mut first = [0_u8; 1];
+    reader.read_exact(&mut first).await?;
+
+    if first[0] == RAW_CHUNK_FRAME_TAG {
+        return receive_raw_chunk_frame_after_tag(reader, len).await;
+    }
+
+    receive_bincode_frame_after_first_byte(reader, len, first[0]).await
+}
+
+async fn send_raw_chunk_frame<W>(
     writer: &mut W,
     index: u32,
     data: &[u8],
@@ -36,7 +51,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let frame_len =
-        RAW_CHUNK_HEADER_LEN
+        RAW_CHUNK_HEADER_SIZE
             .checked_add(data.len())
             .ok_or(ProtocolError::FrameTooLarge {
                 len: usize::MAX,
@@ -45,78 +60,57 @@ where
     validate_frame_len(frame_len)?;
 
     writer.write_all(&(frame_len as u32).to_be_bytes()).await?;
-    writer.write_all(RAW_CHUNK_MAGIC).await?;
-    writer.write_all(&index.to_le_bytes()).await?;
-    writer.write_all(&(data.len() as u64).to_le_bytes()).await?;
+    writer.write_all(&[RAW_CHUNK_FRAME_TAG]).await?;
+    writer.write_all(&index.to_be_bytes()).await?;
     writer.write_all(data).await?;
     writer.flush().await?;
 
     Ok(())
 }
 
-pub async fn receive_message<R>(reader: &mut R) -> Result<WireMessage, ProtocolError>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut len_bytes = [0_u8; 4];
-    reader.read_exact(&mut len_bytes).await?;
-
-    let len = u32::from_be_bytes(len_bytes) as usize;
-    validate_frame_len(len)?;
-
-    let prefix_len = len.min(RAW_CHUNK_MAGIC.len());
-    let mut prefix = vec![0_u8; prefix_len];
-    reader.read_exact(&mut prefix).await?;
-
-    if prefix.as_slice() == RAW_CHUNK_MAGIC {
-        return receive_raw_chunk_message(reader, len).await;
-    }
-
-    let mut payload = prefix;
-    payload.resize(len, 0);
-    reader.read_exact(&mut payload[prefix_len..]).await?;
-    decode_bincode_message(&payload)
-}
-
-async fn receive_raw_chunk_message<R>(
+async fn receive_raw_chunk_frame_after_tag<R>(
     reader: &mut R,
     frame_len: usize,
 ) -> Result<WireMessage, ProtocolError>
 where
     R: AsyncRead + Unpin,
 {
-    if frame_len < RAW_CHUNK_HEADER_LEN {
-        return Err(ProtocolError::FrameTooSmall {
-            len: frame_len,
-            min: RAW_CHUNK_HEADER_LEN,
-        });
+    if frame_len < RAW_CHUNK_HEADER_SIZE {
+        return Err(ProtocolError::InvalidRawChunkFrame(
+            "frame is smaller than raw chunk header",
+        ));
     }
 
     let mut index_bytes = [0_u8; 4];
     reader.read_exact(&mut index_bytes).await?;
-    let index = u32::from_le_bytes(index_bytes);
+    let index = u32::from_be_bytes(index_bytes);
 
-    let mut data_len_bytes = [0_u8; 8];
-    reader.read_exact(&mut data_len_bytes).await?;
-    let data_len = u64::from_le_bytes(data_len_bytes) as usize;
-
-    let expected_data_len = frame_len - RAW_CHUNK_HEADER_LEN;
-    if data_len != expected_data_len {
-        return Err(ProtocolError::RawChunkSizeMismatch {
-            expected: expected_data_len,
-            actual: data_len,
-        });
-    }
-
+    let data_len = frame_len - RAW_CHUNK_HEADER_SIZE;
     let mut data = vec![0_u8; data_len];
-    reader.read_exact(&mut data).await?;
+    if data_len > 0 {
+        reader.read_exact(&mut data).await?;
+    }
 
     Ok(WireMessage::Chunk { index, data })
 }
 
-fn decode_bincode_message(payload: &[u8]) -> Result<WireMessage, ProtocolError> {
+async fn receive_bincode_frame_after_first_byte<R>(
+    reader: &mut R,
+    frame_len: usize,
+    first_byte: u8,
+) -> Result<WireMessage, ProtocolError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut payload = vec![0_u8; frame_len];
+    payload[0] = first_byte;
+
+    if frame_len > 1 {
+        reader.read_exact(&mut payload[1..]).await?;
+    }
+
     let (message, bytes_read): (WireMessage, usize) =
-        bincode::serde::decode_from_slice(payload, bincode::config::standard())?;
+        bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
 
     if bytes_read != payload.len() {
         return Err(ProtocolError::TrailingBytes {
@@ -126,6 +120,18 @@ fn decode_bincode_message(payload: &[u8]) -> Result<WireMessage, ProtocolError> 
     }
 
     Ok(message)
+}
+
+async fn read_frame_len<R>(reader: &mut R) -> Result<usize, ProtocolError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut len_bytes = [0_u8; 4];
+    reader.read_exact(&mut len_bytes).await?;
+
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    validate_frame_len(len)?;
+    Ok(len)
 }
 
 fn validate_frame_len(len: usize) -> Result<(), ProtocolError> {
