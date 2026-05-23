@@ -22,7 +22,7 @@ use crate::{
         descriptor::{EtleDescriptor, FileEntry, ShareId},
         error::FileError,
         manifest::{ChunkMeta, Manifest},
-        storage::{EncryptedChunk, EncryptedFile, decrypt_to_file, encrypt_file},
+        storage::{EncryptedChunk, EncryptedFile, decrypt_to_file},
     },
     network::{
         NetworkError, accept_peer, client_hello_handshake, client_shared_secret_exchange,
@@ -255,6 +255,39 @@ impl Drop for StagedChunkDir {
     }
 }
 
+struct TemporaryLibraryRoot {
+    path: PathBuf,
+}
+
+impl TemporaryLibraryRoot {
+    fn create() -> Result<Self, std::io::Error> {
+        let base = std::env::temp_dir().join("etle-legacy-serve");
+        fs::create_dir_all(&base)?;
+
+        for attempt in 0_u32.. {
+            let candidate = base.join(format!(
+                "{}-{}-{attempt}",
+                std::process::id(),
+                staging_timestamp()
+            ));
+
+            match fs::create_dir(&candidate) {
+                Ok(()) => return Ok(Self { path: candidate }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        unreachable!("unbounded temporary library root loop must return before overflowing")
+    }
+}
+
+impl Drop for TemporaryLibraryRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 fn staging_timestamp() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -289,9 +322,11 @@ fn encrypt_file_to_staging_parallel(
     let (encrypted_tx, encrypted_rx) =
         mpsc::sync_channel::<Result<SeedEncryptedChunk, NetworkError>>(worker_count * 2);
     let file_key = *file_key;
+    let progress_context = file_id.to_string();
 
     thread::scope(|scope| {
         let staging_ref = staging;
+        let progress_context = progress_context.clone();
         let writer = scope.spawn(move || -> Result<Vec<ChunkMeta>, NetworkError> {
             let mut chunk_metas = Vec::new();
 
@@ -299,7 +334,8 @@ fn encrypt_file_to_staging_parallel(
                 let encrypted = result?;
                 staging_ref.write_chunk(encrypted.meta.index, &encrypted.ciphertext)?;
 
-                log_chunk_progress(
+                log_chunk_progress_with_context(
+                    &progress_context,
                     "daemon",
                     "staged+encrypted",
                     log_level,
@@ -461,162 +497,34 @@ pub async fn serve_file_to_one_peer_with_options(
         log_level,
         library_root,
     } = options;
-    let input_path = input_path.as_ref();
-    let (mut stream, peer_addr) = accept_peer(&listener).await?;
-
-    if log_level.is_normal() {
-        println!("[seeder] peer connected: {peer_addr}");
-    }
-
-    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
-    if log_level.is_normal() {
-        println!("[seeder] hello handshake completed with {remote_peer_id}");
-    }
-
-    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
-    if log_level.is_normal() {
-        println!("[seeder] key exchange completed");
-    }
-
-    if log_level.is_normal() {
-        println!("[seeder] hashing and encrypting file...");
-    }
-
-    let session_key = derive_session_key(shared_secret);
-    let file_key = generate_file_key();
-    let encrypted = encrypt_file(input_path, &file_key, chunk_size)?;
-    let total_chunks = encrypted.manifest.chunks.len();
-
-    persist_seed_library_state(
-        library_root.as_deref(),
-        &encrypted.manifest,
-        file_key,
-        &encrypted.chunks,
-        log_level,
-    )?;
-
-    if log_level.is_normal() {
-        println!(
-            "[seeder] encrypted manifest ready: file=\"{}\", size={} bytes, chunks={}",
-            encrypted.manifest.file_name, encrypted.manifest.file_size, total_chunks
-        );
-    }
-
-    if log_level.is_verbose() {
-        println!("[seeder] file_id: {}", encrypted.manifest.file_id);
-        println!(
-            "[seeder] manifest chunk_size: {} bytes",
-            encrypted.manifest.chunk_size
-        );
-        println!("[seeder] generated reusable file key");
-    }
-
-    send_message(
-        &mut stream,
-        &WireMessage::Manifest {
-            manifest: encrypted.manifest.clone(),
-        },
-    )
-    .await?;
-
-    if log_level.is_normal() {
-        println!("[seeder] manifest sent");
-    }
-
-    let wrapped_file_key = wrap_file_key(&session_key, encrypted.manifest.file_id, &file_key)?;
-    send_message(
-        &mut stream,
-        &WireMessage::WrappedFileKey {
-            nonce: wrapped_file_key.nonce,
-            data: wrapped_file_key.data,
-        },
-    )
-    .await?;
-
-    if log_level.is_normal() {
-        println!("[seeder] wrapped file key sent");
-    }
-
-    let available_chunks = encrypted.chunks.keys().copied().collect::<Vec<_>>();
-    send_message(
-        &mut stream,
-        &WireMessage::Have {
-            chunks: available_chunks,
-        },
-    )
-    .await?;
-
-    if log_level.is_normal() {
-        println!("[seeder] advertised {total_chunks}/{total_chunks} available chunks");
-    }
-
-    let mut served_or_known = BTreeSet::new();
-
-    while served_or_known.len() < total_chunks {
-        let message = match receive_message(&mut stream).await {
-            Ok(message) => message,
-            Err(error) if is_peer_closed_protocol_error(&error) => {
-                if log_level.is_normal() {
-                    println!("[seeder] peer disconnected before requesting all chunks");
-                }
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        };
-
-        match message {
-            WireMessage::Have { chunks } => {
-                for index in chunks {
-                    if encrypted.chunks.contains_key(&index) {
-                        served_or_known.insert(index);
-                    }
-                }
-
-                if log_level.is_normal() {
-                    println!(
-                        "[seeder] peer already has {}/{} chunks",
-                        served_or_known.len(),
-                        total_chunks
-                    );
-                }
-            }
-            WireMessage::RequestChunk { index } => {
-                let chunk = encrypted
-                    .chunks
-                    .get(&index)
-                    .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-
-                send_message(
-                    &mut stream,
-                    &WireMessage::Chunk {
-                        index,
-                        data: chunk.data.clone(),
-                    },
-                )
-                .await?;
-
-                served_or_known.insert(index);
-                let served_count = served_or_known.len();
-                log_chunk_progress(
-                    "seeder",
-                    "served",
-                    log_level,
-                    served_count,
-                    total_chunks,
-                    index,
-                    chunk.data.len(),
-                );
-            }
-            actual => {
-                return Err(NetworkError::UnexpectedMessage {
-                    expected: "Have or RequestChunk",
-                    actual,
-                });
-            }
+    let input_path = input_path.as_ref().to_path_buf();
+    let (library_root, _temporary_root) = match library_root {
+        Some(root) => (root, None),
+        None => {
+            let temporary_root = TemporaryLibraryRoot::create()?;
+            (temporary_root.path.clone(), Some(temporary_root))
         }
+    };
+
+    if log_level.is_normal() {
+        println!(
+            "[seeder] legacy one-peer serve now stages via library root: {}",
+            library_root.display()
+        );
     }
 
-    Ok(())
+    let descriptor = add_file_to_library(&input_path, chunk_size, &library_root, log_level)?;
+    let options =
+        ServeFileOptions::new(seeder_id, log_level).with_library_root(library_root.clone());
+
+    serve_library_share_to_one_peer_from_listener(
+        &listener,
+        &library_root,
+        descriptor.share_id,
+        options,
+    )
+    .await
+    .map(|_| ())
 }
 
 pub async fn serve_library_share_to_one_peer(
@@ -637,28 +545,38 @@ pub async fn serve_library_share_forever(
     let library_root = library_root.as_ref().to_path_buf();
 
     loop {
-        match serve_library_share_to_one_peer_from_listener(
-            &listener,
-            &library_root,
-            share_id,
-            options.clone(),
-        )
-        .await
-        {
-            Ok(descriptor) => {
-                if options.log_level.is_normal() {
-                    println!(
-                        "[seeder] ready for next peer: share=\"{}\", share_id={}",
-                        descriptor.name, descriptor.share_id
-                    );
+        let (stream, peer_addr) = accept_peer(&listener).await?;
+        let peer_library_root = library_root.clone();
+        let peer_options = options.clone();
+        let log_level = options.log_level;
+
+        tokio::spawn(async move {
+            match serve_library_share_connected_peer(
+                stream,
+                peer_addr,
+                peer_library_root,
+                share_id,
+                peer_options,
+            )
+            .await
+            {
+                Ok(descriptor) => {
+                    if log_level.is_normal() {
+                        println!(
+                            "[seeder] peer session completed: share=\"{}\", share_id={}",
+                            descriptor.name, descriptor.share_id
+                        );
+                    }
                 }
-            }
-            Err(error) => {
-                if options.log_level.is_normal() {
+                Err(error) if log_level.is_normal() => {
                     println!("[seeder] peer session failed: {error}");
-                    println!("[seeder] keeping listener alive for the next peer");
                 }
+                Err(_) => {}
             }
+        });
+
+        if options.log_level.is_normal() {
+            println!("[seeder] spawned single-share peer session for {peer_addr}");
         }
     }
 }
@@ -805,6 +723,7 @@ async fn serve_library_connected_peer(
     }
 
     let mut served_or_known = BTreeSet::new();
+    let progress_context = descriptor.share_id.to_string();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -854,7 +773,8 @@ async fn serve_library_connected_peer(
                 .await?;
 
                 served_or_known.insert(index);
-                log_chunk_progress(
+                log_chunk_progress_with_context(
+                    &progress_context,
                     "seeder",
                     "served-from-library",
                     log_level,
@@ -882,12 +802,30 @@ async fn serve_library_share_to_one_peer_from_listener(
     share_id: ShareId,
     options: ServeFileOptions,
 ) -> Result<EtleDescriptor, NetworkError> {
+    let (stream, peer_addr) = accept_peer(listener).await?;
+    serve_library_share_connected_peer(
+        stream,
+        peer_addr,
+        library_root.as_ref().to_path_buf(),
+        share_id,
+        options,
+    )
+    .await
+}
+
+async fn serve_library_share_connected_peer(
+    mut stream: TcpStream,
+    peer_addr: SocketAddr,
+    library_root: PathBuf,
+    share_id: ShareId,
+    options: ServeFileOptions,
+) -> Result<EtleDescriptor, NetworkError> {
     let ServeFileOptions {
         seeder_id,
         log_level,
         library_root: _,
     } = options;
-    let paths = LibraryPaths::for_share(library_root, share_id);
+    let paths = LibraryPaths::for_share(&library_root, share_id);
     let descriptor = read_descriptor(&paths)?;
     let secret = read_secret(&paths)?;
     let manifest = manifest_from_descriptor(&descriptor)?;
@@ -895,7 +833,6 @@ async fn serve_library_share_to_one_peer_from_listener(
     let available_chunks = available_chunk_indexes(&paths, &descriptor)?;
     let available_set = available_chunks.iter().copied().collect::<BTreeSet<_>>();
 
-    let (mut stream, peer_addr) = listener.accept().await?;
     if log_level.is_normal() {
         println!("[seeder] peer connected: {peer_addr}");
         println!(
@@ -958,6 +895,7 @@ async fn serve_library_share_to_one_peer_from_listener(
     }
 
     let mut served_or_known = BTreeSet::new();
+    let progress_context = descriptor.share_id.to_string();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -1007,7 +945,8 @@ async fn serve_library_share_to_one_peer_from_listener(
                 .await?;
 
                 served_or_known.insert(index);
-                log_chunk_progress(
+                log_chunk_progress_with_context(
+                    &progress_context,
                     "seeder",
                     "served-from-state",
                     log_level,
@@ -1125,6 +1064,7 @@ async fn serve_library_to_one_peer_from_listener(
     }
 
     let mut served_or_known = BTreeSet::new();
+    let progress_context = descriptor.share_id.to_string();
     while served_or_known.len() < total_chunks {
         let message = match receive_message(&mut stream).await {
             Ok(message) => message,
@@ -1182,7 +1122,8 @@ async fn serve_library_to_one_peer_from_listener(
                 .await?;
 
                 served_or_known.insert(index);
-                log_chunk_progress(
+                log_chunk_progress_with_context(
+                    &progress_context,
                     "seeder",
                     "served-from-library",
                     log_level,
@@ -1408,6 +1349,7 @@ pub async fn download_file_from_peers_parallel_with_options(
     }
 
     let total_chunks = manifest.chunks.len();
+    let progress_context = descriptor.share_id.to_string();
     let queue = Arc::new(Mutex::new(missing_chunks));
     let completed_chunks = Arc::new(Mutex::new(completed_chunks));
     let state = Arc::new(Mutex::new(library_state));
@@ -1421,9 +1363,11 @@ pub async fn download_file_from_peers_parallel_with_options(
         let manifest = Arc::clone(&manifest);
         let output_state_dir = output_state_dir.clone();
         let log_level = options.log_level;
+        let progress_context = progress_context.clone();
 
         handles.push(tokio::spawn(async move {
             parallel_download_worker(
+                progress_context,
                 peer,
                 manifest,
                 queue,
@@ -1617,7 +1561,10 @@ pub async fn download_file_from_peer_with_options(
         .await?;
     }
 
+    let progress_context = descriptor.share_id.to_string();
+
     download_missing_chunks_windowed(
+        &progress_context,
         &mut stream,
         &manifest,
         &peer_available,
@@ -1775,6 +1722,7 @@ async fn connect_download_peer(
 }
 
 async fn parallel_download_worker(
+    progress_context: String,
     mut peer: ConnectedDownloadPeer,
     manifest: Arc<Manifest>,
     queue: Arc<Mutex<VecDeque<u32>>>,
@@ -1823,7 +1771,8 @@ async fn parallel_download_worker(
                     chunks.len()
                 };
 
-                log_chunk_progress(
+                log_chunk_progress_with_context(
+                    &progress_context,
                     "peer",
                     "parallel received+verified",
                     log_level,
@@ -1889,6 +1838,7 @@ async fn request_chunk_from_peer(
 }
 
 async fn download_missing_chunks_windowed(
+    progress_context: &str,
     stream: &mut TcpStream,
     manifest: &Manifest,
     peer_available: &BTreeSet<u32>,
@@ -1905,7 +1855,8 @@ async fn download_missing_chunks_windowed(
 
     for meta in &manifest.chunks {
         if completed_chunks.contains(&meta.index) {
-            log_chunk_progress(
+            log_chunk_progress_with_context(
+                progress_context,
                 "peer",
                 "reused",
                 log_level,
@@ -1976,7 +1927,8 @@ async fn download_missing_chunks_windowed(
                     chunks.insert(index, encrypted_chunk);
                 }
 
-                log_chunk_progress(
+                log_chunk_progress_with_context(
+                    progress_context,
                     "peer",
                     "received+verified",
                     log_level,
@@ -2119,34 +2071,6 @@ fn manifest_from_descriptor(descriptor: &EtleDescriptor) -> Result<Manifest, Net
         chunk_size: descriptor.chunk_size,
         chunks: descriptor.chunks.clone(),
     })
-}
-
-fn persist_seed_library_state(
-    library_root: Option<&Path>,
-    manifest: &Manifest,
-    file_key: crate::crypto::aead::SymmetricKey,
-    chunks: &BTreeMap<u32, EncryptedChunk>,
-    log_level: TransferLogLevel,
-) -> Result<(), NetworkError> {
-    let Some(root) = library_root else {
-        return Ok(());
-    };
-
-    let descriptor = descriptor_from_manifest(manifest);
-    let paths = initialize_share_library(root, &descriptor, file_key, ShareMode::Seeding, None)?;
-
-    for chunk in chunks.values() {
-        write_encrypted_chunk(&paths, chunk)?;
-    }
-
-    if log_level.is_normal() {
-        println!(
-            "[seeder] seed state stored: {}",
-            paths.share_dir().display()
-        );
-    }
-
-    Ok(())
 }
 
 struct ActiveDownloadLibraryState {
@@ -2375,13 +2299,15 @@ fn decrypt_library_chunks_to_file_sequential(
     let mut output = BufWriter::with_capacity(RECONSTRUCT_WRITER_BUFFER_SIZE, output);
     let mut final_hasher = blake3::Hasher::new();
     let total_chunks = manifest.chunks.len();
+    let progress_context = manifest.file_id.to_string();
 
     for (offset, meta) in manifest.chunks.iter().enumerate() {
         let decrypted = decrypt_library_chunk(paths, manifest.file_id, file_key, meta)?;
         let decrypted_len = decrypted.data.len();
         final_hasher.update(&decrypted.data);
         output.write_all(&decrypted.data)?;
-        log_chunk_progress(
+        log_chunk_progress_with_context(
+            &progress_context,
             "peer",
             "decrypted+written",
             log_level,
@@ -2414,6 +2340,7 @@ fn decrypt_library_chunks_to_file_parallel(
     let file_id = manifest.file_id;
     let file_key = *file_key;
     let total_chunks = manifest.chunks.len();
+    let progress_context = manifest.file_id.to_string();
 
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -2455,7 +2382,8 @@ fn decrypt_library_chunks_to_file_parallel(
                         final_hasher.update(&data);
                         output.write_all(&data)?;
                         let done = (next_index as usize).saturating_add(1);
-                        log_chunk_progress(
+                        log_chunk_progress_with_context(
+                            &progress_context,
                             "peer",
                             "decrypted+written",
                             log_level,
@@ -2655,11 +2583,24 @@ pub fn log_chunk_progress(
     index: u32,
     bytes: usize,
 ) {
+    log_chunk_progress_with_context("global", role, action, log_level, done, total, index, bytes);
+}
+
+fn log_chunk_progress_with_context(
+    context: &str,
+    role: &str,
+    action: &str,
+    log_level: TransferLogLevel,
+    done: usize,
+    total: usize,
+    index: u32,
+    bytes: usize,
+) {
     if matches!(log_level, TransferLogLevel::Quiet) {
         return;
     }
 
-    let key = ProgressKey::new(role, action, total);
+    let key = ProgressKey::new(context, role, action, total);
     let mut states = progress_states()
         .lock()
         .expect("transfer progress state mutex poisoned");
@@ -2694,14 +2635,16 @@ fn progress_states() -> &'static Mutex<BTreeMap<ProgressKey, ProgressState>> {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ProgressKey {
+    context: String,
     role: String,
     action: String,
     total: usize,
 }
 
 impl ProgressKey {
-    fn new(role: &str, action: &str, total: usize) -> Self {
+    fn new(context: &str, role: &str, action: &str, total: usize) -> Self {
         Self {
+            context: context.to_string(),
             role: role.to_string(),
             action: action.to_string(),
             total,
