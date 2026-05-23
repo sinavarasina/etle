@@ -1862,10 +1862,19 @@ async fn download_missing_chunks_windowed(
     request_window: usize,
     share_id: ShareId,
 ) -> Result<(), NetworkError> {
-    let request_window = request_window.max(1);
+    let max_request_window = request_window.max(1);
+    let mut active_request_window = initial_request_window(max_request_window);
+    let mut chunks_since_window_growth = 0_usize;
     let total_chunks = manifest.chunks.len();
     let mut next_meta = 0_usize;
     let mut in_flight = BTreeMap::<u32, ChunkMeta>::new();
+
+    if log_level.is_normal() && max_request_window > 1 {
+        println!(
+            "[peer] adaptive request window enabled: start={}, max={}",
+            active_request_window, max_request_window
+        );
+    }
 
     for meta in &manifest.chunks {
         if completed_chunks.contains(&meta.index) {
@@ -1883,7 +1892,7 @@ async fn download_missing_chunks_windowed(
     }
 
     loop {
-        while in_flight.len() < request_window && next_meta < manifest.chunks.len() {
+        while in_flight.len() < active_request_window && next_meta < manifest.chunks.len() {
             let meta = &manifest.chunks[next_meta];
             next_meta += 1;
 
@@ -1951,6 +1960,14 @@ async fn download_missing_chunks_windowed(
                     index,
                     chunk_len,
                 );
+
+                chunks_since_window_growth = chunks_since_window_growth.saturating_add(1);
+                maybe_grow_request_window(
+                    &mut active_request_window,
+                    &mut chunks_since_window_growth,
+                    max_request_window,
+                    log_level,
+                );
             }
             WireMessage::Error { message } => return Err(NetworkError::PeerError(message)),
             actual => {
@@ -1963,6 +1980,32 @@ async fn download_missing_chunks_windowed(
     }
 
     Ok(())
+}
+
+fn initial_request_window(max_request_window: usize) -> usize {
+    max_request_window.min(4).max(1)
+}
+
+fn maybe_grow_request_window(
+    active_request_window: &mut usize,
+    chunks_since_window_growth: &mut usize,
+    max_request_window: usize,
+    log_level: TransferLogLevel,
+) {
+    if *active_request_window >= max_request_window {
+        return;
+    }
+
+    if *chunks_since_window_growth < *active_request_window {
+        return;
+    }
+
+    *chunks_since_window_growth = 0;
+    *active_request_window = (*active_request_window * 2).min(max_request_window);
+
+    if log_level.is_verbose() {
+        println!("[peer] adaptive request window increased to {active_request_window}");
+    }
 }
 
 fn pop_next_available_missing_chunk(
