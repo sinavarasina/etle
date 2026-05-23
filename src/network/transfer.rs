@@ -4,9 +4,9 @@ use std::{
     io::{ErrorKind, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use tokio::net::{TcpListener, TcpStream};
@@ -45,6 +45,11 @@ pub enum TransferLogLevel {
 }
 
 impl TransferLogLevel {
+    #[must_use]
+    pub const fn i_normal(self) -> bool {
+        matches!(self, Self::Normal | Self::Verbose)
+    }
+
     #[must_use]
     pub const fn is_normal(self) -> bool {
         matches!(self, Self::Normal | Self::Verbose)
@@ -159,6 +164,7 @@ fn add_file_to_library_streaming(
     let file_id = hash_file(input_path)?;
     let file_size = fs::metadata(input_path)?.len();
     let file_name = manifest_file_name(input_path);
+    let total_chunks = total_chunks_for_size(file_size, chunk_size);
     let staging = StagedChunkDir::create(library_root)?;
     let mut input = File::open(input_path)?;
     let mut buffer = vec![0_u8; chunk_size];
@@ -185,6 +191,16 @@ fn add_file_to_library_streaming(
             nonce,
             blake3_hash: encrypted_hash,
         });
+
+        log_chunk_progress(
+            "daemon",
+            "staged+encrypted",
+            log_level,
+            chunk_metas.len(),
+            total_chunks,
+            index,
+            read,
+        );
 
         if log_level.is_verbose() {
             println!(
@@ -295,6 +311,15 @@ fn manifest_file_name(path: &Path) -> String {
         .unwrap_or_else(|| "unnamed".to_string())
 }
 
+fn total_chunks_for_size(total_size: u64, chunk_size: usize) -> usize {
+    if total_size == 0 || chunk_size == 0 {
+        return 0;
+    }
+
+    let chunk_size = chunk_size as u64;
+    (total_size.saturating_add(chunk_size - 1) / chunk_size) as usize
+}
+
 pub async fn serve_file_to_one_peer(
     listener: TcpListener,
     input_path: impl AsRef<Path>,
@@ -342,8 +367,6 @@ pub async fn serve_file_to_one_peer_with_options(
         println!("[seeder] hashing and encrypting file...");
     }
 
-    // The file key is now independent from the peer session. This makes
-    // encrypted chunks reusable by future swarm/partial-seeder flows.
     let session_key = derive_session_key(shared_secret);
     let file_key = generate_file_key();
     let encrypted = encrypt_file(input_path, &file_key, chunk_size)?;
@@ -756,7 +779,7 @@ async fn serve_library_share_to_one_peer_from_listener(
     let available_chunks = available_chunk_indexes(&paths, &descriptor)?;
     let available_set = available_chunks.iter().copied().collect::<BTreeSet<_>>();
 
-    let (mut stream, peer_addr) = accept_peer(&listener).await?;
+    let (mut stream, peer_addr) = accept_peer(listener).await?;
     if log_level.is_normal() {
         println!("[seeder] peer connected: {peer_addr}");
         println!(
@@ -929,10 +952,6 @@ pub async fn download_file_from_peers_with_options(
         let attempt_number = attempt + 1;
         let mut attempt_options = options.clone();
 
-        // Multi-peer fallback relies on persisted encrypted chunks between
-        // attempts. Even if the user did not explicitly pass --resume, force
-        // resume after the first peer so chunks fetched from a failed/partial
-        // peer can be reused by the next peer.
         if total_peers > 1 || attempt > 0 {
             attempt_options = attempt_options.with_resume(true);
         }
@@ -1094,7 +1113,13 @@ pub async fn download_file_from_peers_parallel_with_options(
         }
 
         let active_state = active_download_state(&library_state)?;
-        decrypt_library_chunks_to_file(&active_state.paths, &manifest, &file_key, output_path)?;
+        decrypt_library_chunks_to_file(
+            &active_state.paths,
+            &manifest,
+            &file_key,
+            output_path,
+            options.log_level,
+        )?;
         mark_download_library_complete(&library_state, output_state_dir)?;
         return Ok(manifest);
     }
@@ -1170,7 +1195,13 @@ pub async fn download_file_from_peers_parallel_with_options(
     {
         let state = state.lock().expect("parallel state mutex poisoned");
         let active_state = active_download_state(&state)?;
-        decrypt_library_chunks_to_file(&active_state.paths, &manifest, &file_key, output_path)?;
+        decrypt_library_chunks_to_file(
+            &active_state.paths,
+            &manifest,
+            &file_key,
+            output_path,
+            options.log_level,
+        )?;
         mark_download_library_complete(&state, output_state_dir)?;
     }
 
@@ -1398,7 +1429,13 @@ pub async fn download_file_from_peer_with_options(
 
     if streaming_to_library {
         let active_state = active_download_state(&library_state)?;
-        decrypt_library_chunks_to_file(&active_state.paths, &manifest, &file_key, output_path)?;
+        decrypt_library_chunks_to_file(
+            &active_state.paths,
+            &manifest,
+            &file_key,
+            output_path,
+            log_level,
+        )?;
     } else {
         let encrypted = EncryptedFile {
             manifest: manifest.clone(),
@@ -1756,6 +1793,10 @@ fn manifest_from_descriptor(descriptor: &EtleDescriptor) -> Result<Manifest, Net
     })
 }
 
+fn publish_share_updated_event(_share: &crate::ipc::IpcShareSummary) {
+    // Penampung event - implementasi Sprint lanjutan
+}
+
 fn persist_seed_library_state(
     library_root: Option<&Path>,
     manifest: &Manifest,
@@ -1961,14 +2002,28 @@ fn decrypt_library_chunks_to_file(
     manifest: &Manifest,
     file_key: &SymmetricKey,
     output_path: &Path,
+    log_level: TransferLogLevel,
 ) -> Result<(), NetworkError> {
     let worker_count = default_decrypt_worker_count(manifest.chunks.len());
 
     if worker_count <= 1 {
-        return decrypt_library_chunks_to_file_sequential(paths, manifest, file_key, output_path);
+        return decrypt_library_chunks_to_file_sequential(
+            paths,
+            manifest,
+            file_key,
+            output_path,
+            log_level,
+        );
     }
 
-    decrypt_library_chunks_to_file_parallel(paths, manifest, file_key, output_path, worker_count)
+    decrypt_library_chunks_to_file_parallel(
+        paths,
+        manifest,
+        file_key,
+        output_path,
+        worker_count,
+        log_level,
+    )
 }
 
 fn decrypt_library_chunks_to_file_sequential(
@@ -1976,16 +2031,28 @@ fn decrypt_library_chunks_to_file_sequential(
     manifest: &Manifest,
     file_key: &SymmetricKey,
     output_path: &Path,
+    log_level: TransferLogLevel,
 ) -> Result<(), NetworkError> {
     prepare_output_file_parent(output_path)?;
 
     let mut output = File::create(output_path)?;
     let mut final_hasher = blake3::Hasher::new();
+    let total_chunks = manifest.chunks.len();
 
-    for meta in &manifest.chunks {
+    for (offset, meta) in manifest.chunks.iter().enumerate() {
         let decrypted = decrypt_library_chunk(paths, manifest.file_id, file_key, meta)?;
+        let decrypted_len = decrypted.data.len();
         final_hasher.update(&decrypted.data);
         output.write_all(&decrypted.data)?;
+        log_chunk_progress(
+            "peer",
+            "decrypted+written",
+            log_level,
+            offset + 1,
+            total_chunks,
+            meta.index,
+            decrypted_len,
+        );
     }
 
     finalize_streamed_output(output, final_hasher, manifest.file_id)
@@ -1997,6 +2064,7 @@ fn decrypt_library_chunks_to_file_parallel(
     file_key: &SymmetricKey,
     output_path: &Path,
     worker_count: usize,
+    log_level: TransferLogLevel,
 ) -> Result<(), NetworkError> {
     prepare_output_file_parent(output_path)?;
 
@@ -2045,8 +2113,19 @@ fn decrypt_library_chunks_to_file_parallel(
                     pending.insert(decrypted.index, decrypted.data);
 
                     while let Some(data) = pending.remove(&next_index) {
+                        let bytes = data.len();
                         final_hasher.update(&data);
                         output.write_all(&data)?;
+                        let done = (next_index as usize).saturating_add(1);
+                        log_chunk_progress(
+                            "peer",
+                            "decrypted+written",
+                            log_level,
+                            done,
+                            total_chunks,
+                            next_index,
+                            bytes,
+                        );
                         next_index = next_index.saturating_add(1);
                     }
                 }
@@ -2203,7 +2282,11 @@ fn is_peer_closed_protocol_error(error: &ProtocolError) -> bool {
     )
 }
 
-fn log_chunk_progress(
+// =========================================================================
+// DIMULAI DARI SINI: PENGGABUNGAN MANUAL BLOK YANG REJECTED DARI .REJ
+// =========================================================================
+
+pub fn log_chunk_progress(
     role: &str,
     action: &str,
     log_level: TransferLogLevel,
@@ -2212,42 +2295,203 @@ fn log_chunk_progress(
     index: u32,
     bytes: usize,
 ) {
-    if !should_log_progress(log_level, done, total) {
+    if matches!(log_level, TransferLogLevel::Quiet) {
         return;
     }
 
-    let percent = progress_percent(done, total);
+    let key = ProgressKey::new(role, action, total);
+    let mut states = progress_states()
+        .lock()
+        .expect("transfer progress state mutex poisoned");
+    let now = Instant::now();
+    let state = states
+        .entry(key.clone())
+        .or_insert_with(|| ProgressState::new(now));
 
-    if log_level.is_verbose() {
-        println!(
-            "[{role}] {action} chunk {done}/{total} (index {index}, {bytes} bytes, {percent}%)"
-        );
-    } else {
-        println!("[{role}] {action} chunk {done}/{total} ({percent}%)");
+    if done > state.last_done {
+        state.bytes_done = state.bytes_done.saturating_add(bytes as u64);
+        state.last_done = done;
     }
+
+    if !should_log_progress(log_level, done, total, now.duration_since(state.last_log)) {
+        return;
+    }
+
+    let line = format_progress_line(role, action, done, total, index, bytes, state, now);
+    state.last_log = now;
+
+    if done >= total {
+        states.remove(&key);
+    }
+
+    println!("{line}");
 }
 
-fn should_log_progress(log_level: TransferLogLevel, done: usize, total: usize) -> bool {
-    match log_level {
-        TransferLogLevel::Quiet => false,
-        TransferLogLevel::Verbose => true,
-        TransferLogLevel::Normal => {
-            if total <= 64 || done == 1 || done == total {
-                return true;
-            }
+fn progress_states() -> &'static Mutex<BTreeMap<ProgressKey, ProgressState>> {
+    static STATES: OnceLock<Mutex<BTreeMap<ProgressKey, ProgressState>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
 
-            let previous_percent = done.saturating_sub(1).saturating_mul(100) / total;
-            let current_percent = done.saturating_mul(100) / total;
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ProgressKey {
+    role: String,
+    action: String,
+    total: usize,
+}
 
-            current_percent / 10 != previous_percent / 10
+impl ProgressKey {
+    fn new(role: &str, action: &str, total: usize) -> Self {
+        Self {
+            role: role.to_string(),
+            action: action.to_string(),
+            total,
         }
     }
 }
 
-fn progress_percent(done: usize, total: usize) -> usize {
+struct ProgressState {
+    start: Instant,
+    last_log: Instant,
+    last_done: usize,
+    bytes_done: u64,
+}
+
+impl ProgressState {
+    fn new(now: Instant) -> Self {
+        Self {
+            start: now,
+            last_log: now.checked_sub(Duration::from_secs(1)).unwrap_or(now),
+            last_done: 0,
+            bytes_done: 0,
+        }
+    }
+}
+
+fn should_log_progress(
+    log_level: TransferLogLevel,
+    done: usize,
+    total: usize,
+    since_last_log: Duration,
+) -> bool {
+    match log_level {
+        TransferLogLevel::Quiet => false,
+        TransferLogLevel::Verbose => true,
+        TransferLogLevel::Normal => {
+            done == 1 || done >= total || since_last_log >= Duration::from_millis(750)
+        }
+    }
+}
+
+fn format_progress_line(
+    role: &str,
+    action: &str,
+    done: usize,
+    total: usize,
+    index: u32,
+    bytes: usize,
+    state: &ProgressState,
+    now: Instant,
+) -> String {
+    let total_bytes = estimated_total_bytes(state.bytes_done, done, total);
+    let percent = progress_percent_bytes(state.bytes_done, total_bytes);
+    let elapsed = now.duration_since(state.start);
+    let average_rate = bytes_per_second(state.bytes_done, elapsed);
+    let eta = estimate_eta(state.bytes_done, total_bytes, average_rate);
+
+    format!(
+        "[{role}] {action} chunk {done}/{total} ({percent:.2}%) | \
+        index={index} | chunk={} | progress={}/{} | avg={} | eta={}",
+        format_bytes(bytes as u64),
+        format_bytes(state.bytes_done),
+        format_bytes(total_bytes),
+        format_rate(average_rate),
+        format_duration(eta),
+    )
+}
+
+fn estimated_total_bytes(done_bytes: u64, done: usize, total: usize) -> u64 {
     if total == 0 {
-        100
+        return 0;
+    }
+
+    if done >= total {
+        return done_bytes;
+    }
+
+    if done == 0 || done_bytes == 0 {
+        return 0;
+    }
+
+    let average_chunk = (done_bytes / done as u64).max(1);
+    average_chunk.saturating_mul(total as u64)
+}
+
+fn progress_percent_bytes(done_bytes: u64, total_bytes: u64) -> f64 {
+    if total_bytes == 0 {
+        return 100.0;
+    }
+
+    (done_bytes as f64 * 100.0 / total_bytes as f64).min(100.0)
+}
+
+fn bytes_per_second(done_bytes: u64, elapsed: Duration) -> f64 {
+    let secs = elapsed.as_secs_f64();
+    if secs <= f64::EPSILON {
+        return 0.0;
+    }
+
+    done_bytes as f64 / secs
+}
+
+fn estimate_eta(done_bytes: u64, total_bytes: u64, average_rate: f64) -> Option<Duration> {
+    if done_bytes >= total_bytes || average_rate <= f64::EPSILON {
+        return None;
+    }
+
+    let remaining = total_bytes.saturating_sub(done_bytes) as f64;
+    Some(Duration::from_secs_f64(remaining / average_rate))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = UNITS[0];
+
+    for candidate in &UNITS[1..] {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = candidate;
+    }
+
+    if unit == "B" {
+        format!("{bytes} B")
     } else {
-        done.saturating_mul(100) / total
+        format!("{value:.2} {unit}")
+    }
+}
+
+fn format_rate(bytes_per_second: f64) -> String {
+    if bytes_per_second <= f64::EPSILON {
+        return "0 B/s".to_string();
+    }
+
+    format!("{}/s", format_bytes(bytes_per_second as u64))
+}
+
+fn format_duration(duration: Option<Duration>) -> String {
+    let Some(duration) = duration else {
+        return "--".to_string();
+    };
+
+    let seconds = duration.as_secs();
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+
+    if minutes == 0 {
+        format!("{seconds}s")
+    } else {
+        format!("{minutes}m {seconds}s")
     }
 }
