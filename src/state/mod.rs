@@ -83,8 +83,10 @@ impl DownloadProgress {
     }
 
     pub fn mark_completed(&mut self, index: u32) {
-        self.completed_chunks.push(index);
-        normalize_chunk_list(&mut self.completed_chunks);
+        match self.completed_chunks.binary_search(&index) {
+            Ok(_) => {}
+            Err(position) => self.completed_chunks.insert(position, index),
+        }
     }
 
     #[must_use]
