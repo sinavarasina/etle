@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
-    io::{ErrorKind, Read, Write},
+    io::{BufWriter, ErrorKind, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, mpsc},
@@ -126,6 +126,9 @@ impl DownloadFileOptions {
 }
 
 const STAGING_DIR_NAME: &str = "staging";
+const PROGRESS_FLUSH_CHUNK_INTERVAL: usize = 32;
+const PROGRESS_FLUSH_TIME_INTERVAL: Duration = Duration::from_millis(750);
+const RECONSTRUCT_WRITER_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
 pub fn add_file_to_library(
     input_path: impl AsRef<Path>,
@@ -1120,7 +1123,7 @@ pub async fn download_file_from_peers_parallel_with_options(
             output_path,
             options.log_level,
         )?;
-        mark_download_library_complete(&library_state, output_state_dir)?;
+        mark_download_library_complete(&mut library_state, output_state_dir)?;
         return Ok(manifest);
     }
 
@@ -1193,7 +1196,7 @@ pub async fn download_file_from_peers_parallel_with_options(
     }
 
     {
-        let state = state.lock().expect("parallel state mutex poisoned");
+        let mut state = state.lock().expect("parallel state mutex poisoned");
         let active_state = active_download_state(&state)?;
         decrypt_library_chunks_to_file(
             &active_state.paths,
@@ -1202,7 +1205,7 @@ pub async fn download_file_from_peers_parallel_with_options(
             output_path,
             options.log_level,
         )?;
-        mark_download_library_complete(&state, output_state_dir)?;
+        mark_download_library_complete(&mut state, output_state_dir)?;
     }
 
     if options.log_level.is_normal() {
@@ -1444,7 +1447,7 @@ pub async fn download_file_from_peer_with_options(
 
         decrypt_to_file(&encrypted, &file_key, output_path)?;
     }
-    mark_download_library_complete(&library_state, output_state_dir)?;
+    mark_download_library_complete(&mut library_state, output_state_dir)?;
 
     if log_level.is_normal() {
         println!("[peer] final hash verified: {}", manifest.file_id);
@@ -1828,6 +1831,8 @@ fn persist_seed_library_state(
 struct ActiveDownloadLibraryState {
     paths: LibraryPaths,
     progress: DownloadProgress,
+    dirty_chunks: usize,
+    last_progress_flush: Instant,
 }
 
 fn initialize_download_library_state(
@@ -1871,7 +1876,12 @@ fn initialize_download_library_state(
                 paths.share_dir().display()
             );
         }
-        return Ok(Some(ActiveDownloadLibraryState { paths, progress }));
+        return Ok(Some(ActiveDownloadLibraryState {
+            paths,
+            progress,
+            dirty_chunks: 0,
+            last_progress_flush: Instant::now(),
+        }));
     }
 
     write_progress(&paths, &progress)?;
@@ -1888,7 +1898,12 @@ fn initialize_download_library_state(
         );
     }
 
-    Ok(Some(ActiveDownloadLibraryState { paths, progress }))
+    Ok(Some(ActiveDownloadLibraryState {
+        paths,
+        progress,
+        dirty_chunks: 0,
+        last_progress_flush: Instant::now(),
+    }))
 }
 
 fn load_resumable_chunks(
@@ -2035,7 +2050,8 @@ fn decrypt_library_chunks_to_file_sequential(
 ) -> Result<(), NetworkError> {
     prepare_output_file_parent(output_path)?;
 
-    let mut output = File::create(output_path)?;
+    let output = File::create(output_path)?;
+    let mut output = BufWriter::with_capacity(RECONSTRUCT_WRITER_BUFFER_SIZE, output);
     let mut final_hasher = blake3::Hasher::new();
     let total_chunks = manifest.chunks.len();
 
@@ -2068,7 +2084,8 @@ fn decrypt_library_chunks_to_file_parallel(
 ) -> Result<(), NetworkError> {
     prepare_output_file_parent(output_path)?;
 
-    let mut output = File::create(output_path)?;
+    let output = File::create(output_path)?;
+    let mut output = BufWriter::with_capacity(RECONSTRUCT_WRITER_BUFFER_SIZE, output);
     let mut final_hasher = blake3::Hasher::new();
     let queue = Arc::new(Mutex::new(VecDeque::from(manifest.chunks.clone())));
     let (tx, rx) = mpsc::sync_channel::<Result<DecryptedChunk, NetworkError>>(worker_count * 2);
@@ -2198,7 +2215,7 @@ fn prepare_output_file_parent(output_path: &Path) -> Result<(), NetworkError> {
 }
 
 fn finalize_streamed_output(
-    mut output: File,
+    mut output: impl Write,
     final_hasher: blake3::Hasher,
     expected_file_id: FileId,
 ) -> Result<(), NetworkError> {
@@ -2239,22 +2256,48 @@ fn persist_downloaded_chunk(
 
     write_encrypted_chunk(&state.paths, chunk)?;
     state.progress.mark_completed(chunk.index);
+    state.dirty_chunks = state.dirty_chunks.saturating_add(1);
+
+    if should_flush_download_progress(state) {
+        flush_download_progress(state, ShareMode::Downloading, output_dir)?;
+    }
+
+    Ok(())
+}
+
+fn should_flush_download_progress(state: &ActiveDownloadLibraryState) -> bool {
+    state.dirty_chunks >= PROGRESS_FLUSH_CHUNK_INTERVAL
+        || state.last_progress_flush.elapsed() >= PROGRESS_FLUSH_TIME_INTERVAL
+}
+
+fn flush_download_progress(
+    state: &mut ActiveDownloadLibraryState,
+    mode: ShareMode,
+    output_dir: Option<PathBuf>,
+) -> Result<(), NetworkError> {
     write_progress(&state.paths, &state.progress)?;
     write_state(
         &state.paths,
-        &ShareState::from_progress(ShareMode::Downloading, output_dir, &state.progress),
+        &ShareState::from_progress(mode, output_dir, &state.progress),
     )?;
+
+    state.dirty_chunks = 0;
+    state.last_progress_flush = Instant::now();
 
     Ok(())
 }
 
 fn mark_download_library_complete(
-    state: &Option<ActiveDownloadLibraryState>,
+    state: &mut Option<ActiveDownloadLibraryState>,
     output_dir: Option<PathBuf>,
 ) -> Result<(), NetworkError> {
     let Some(state) = state else {
         return Ok(());
     };
+
+    if state.dirty_chunks > 0 {
+        flush_download_progress(state, ShareMode::Downloading, output_dir.clone())?;
+    }
 
     write_state(
         &state.paths,
@@ -2281,10 +2324,6 @@ fn is_peer_closed_protocol_error(error: &ProtocolError) -> bool {
             )
     )
 }
-
-// =========================================================================
-// DIMULAI DARI SINI: PENGGABUNGAN MANUAL BLOK YANG REJECTED DARI .REJ
-// =========================================================================
 
 pub fn log_chunk_progress(
     role: &str,
