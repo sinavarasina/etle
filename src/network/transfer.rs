@@ -1245,7 +1245,7 @@ pub async fn download_file_from_peers_parallel_with_options(
     let mut reference_file_key = None;
     let mut last_error = None;
 
-    for peer_addr in peer_addrs.into_iter().take(worker_limit) {
+    for peer_addr in peer_addrs.iter().copied().take(worker_limit) {
         match connect_download_peer(
             peer_addr,
             options.peer_id.clone(),
@@ -1414,13 +1414,25 @@ pub async fn download_file_from_peers_parallel_with_options(
             .iter()
             .find(|meta| !completed_chunks.contains(&meta.index))
         {
-            if options.log_level.is_normal() && !worker_errors.is_empty() {
+            if options.log_level.is_normal() {
+                if !worker_errors.is_empty() {
+                    println!(
+                        "[peer] parallel worker errors: {}",
+                        worker_errors.join("; ")
+                    );
+                }
                 println!(
-                    "[peer] parallel worker errors: {}",
-                    worker_errors.join("; ")
+                    "[peer] retrying missing chunks with sequential peer fallback; first missing index={}",
+                    meta.index
                 );
             }
-            return Err(NetworkError::MissingEncryptedChunk(meta.index));
+
+            return download_file_from_peers_with_options(
+                peer_addrs,
+                output_path,
+                options.with_resume(true),
+            )
+            .await;
         }
     }
 
@@ -1797,6 +1809,14 @@ async fn parallel_download_worker(
                 queue
                     .expect_lock("parallel queue mutex poisoned")
                     .push_back(index);
+
+                if log_level.is_normal() {
+                    println!(
+                        "[peer] worker {} released chunk {} for another peer after error: {}",
+                        peer.peer_addr, index, error
+                    );
+                }
+
                 return Err(error);
             }
         }
