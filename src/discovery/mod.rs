@@ -5,14 +5,60 @@ use std::{
     time::Duration,
 };
 
+use get_if_addrs::{IfAddr, get_if_addrs};
 use serde::{Deserialize, Serialize};
 use tokio::{net::UdpSocket, time};
 
 use crate::{file::descriptor::ShareId, state::list_library_shares};
 
 pub const DEFAULT_DISCOVERY_PORT: u16 = 37037;
+pub const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 3000;
+pub const DEFAULT_DISCOVERY_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(239, 255, 0, 86);
+
 const DISCOVERY_MAGIC: &str = "etle-discovery-v1";
 const MAX_DISCOVERY_PACKET_SIZE: usize = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiscoveryOptions {
+    pub port: u16,
+    pub timeout: Duration,
+    pub multicast: Option<Ipv4Addr>,
+}
+
+impl DiscoveryOptions {
+    #[must_use]
+    pub const fn new(port: u16) -> Self {
+        Self {
+            port,
+            timeout: Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS),
+            multicast: Some(DEFAULT_DISCOVERY_MULTICAST_ADDR),
+        }
+    }
+
+    #[must_use]
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn with_multicast(mut self, multicast: Ipv4Addr) -> Self {
+        self.multicast = multicast.is_multicast().then_some(multicast);
+        self
+    }
+
+    #[must_use]
+    pub const fn without_multicast(mut self) -> Self {
+        self.multicast = None;
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiscoveryInterface {
+    ip: Ipv4Addr,
+    broadcast: Option<Ipv4Addr>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum DiscoveryMessage {
@@ -35,11 +81,30 @@ pub async fn serve_discovery_forever(
     peer_id: impl Into<String>,
     discovery_port: u16,
 ) -> std::io::Result<()> {
+    serve_discovery_forever_with_options(
+        library_root,
+        p2p_listen,
+        peer_id,
+        DiscoveryOptions::new(discovery_port),
+    )
+    .await
+}
+
+pub async fn serve_discovery_forever_with_options(
+    library_root: impl AsRef<Path>,
+    p2p_listen: SocketAddr,
+    peer_id: impl Into<String>,
+    options: DiscoveryOptions,
+) -> std::io::Result<()> {
     let library_root = library_root.as_ref().to_path_buf();
     let peer_id = peer_id.into();
-    let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), discovery_port);
+    let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), options.port);
     let socket = UdpSocket::bind(bind_addr).await?;
     socket.set_broadcast(true)?;
+
+    if let Some(multicast) = options.multicast {
+        join_multicast_on_active_interfaces(&socket, multicast);
+    }
 
     let mut buffer = [0_u8; MAX_DISCOVERY_PACKET_SIZE];
     loop {
@@ -78,6 +143,17 @@ pub async fn discover_peers_for_share(
     discovery_port: u16,
     timeout: Duration,
 ) -> std::io::Result<Vec<SocketAddr>> {
+    discover_peers_for_share_with_options(
+        share_id,
+        DiscoveryOptions::new(discovery_port).with_timeout(timeout),
+    )
+    .await
+}
+
+pub async fn discover_peers_for_share_with_options(
+    share_id: ShareId,
+    options: DiscoveryOptions,
+) -> std::io::Result<Vec<SocketAddr>> {
     let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)).await?;
     socket.set_broadcast(true)?;
 
@@ -86,13 +162,12 @@ pub async fn discover_peers_for_share(
         share_id,
     };
     let payload = encode_message(&query)?;
-    let broadcast = SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), discovery_port);
-    let localhost = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), discovery_port);
 
-    let _ = socket.send_to(&payload, broadcast).await;
-    let _ = socket.send_to(&payload, localhost).await;
+    for target in discovery_query_targets(options.port, options.multicast) {
+        let _ = socket.send_to(&payload, target).await;
+    }
 
-    let deadline = time::Instant::now() + timeout;
+    let deadline = time::Instant::now() + options.timeout;
     let mut peers = BTreeSet::new();
     let mut buffer = [0_u8; MAX_DISCOVERY_PACKET_SIZE];
 
@@ -128,6 +203,72 @@ pub async fn discover_peers_for_share(
     Ok(peers.into_iter().collect())
 }
 
+#[must_use]
+pub fn discovery_query_targets(port: u16, multicast: Option<Ipv4Addr>) -> Vec<SocketAddr> {
+    let mut targets = BTreeSet::new();
+
+    targets.insert(SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), port));
+    targets.insert(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+
+    if let Some(multicast) = multicast {
+        if multicast.is_multicast() {
+            targets.insert(SocketAddr::new(IpAddr::V4(multicast), port));
+        }
+    }
+
+    for interface in active_ipv4_interfaces().unwrap_or_default() {
+        if let Some(broadcast) = interface.broadcast {
+            targets.insert(SocketAddr::new(IpAddr::V4(broadcast), port));
+        }
+    }
+
+    targets.into_iter().collect()
+}
+
+fn active_ipv4_interfaces() -> std::io::Result<Vec<DiscoveryInterface>> {
+    let mut interfaces = Vec::new();
+
+    for interface in get_if_addrs()? {
+        let IfAddr::V4(ipv4) = interface.addr else {
+            continue;
+        };
+
+        let ip = ipv4.ip;
+        if ip.is_unspecified() {
+            continue;
+        }
+
+        let broadcast = ipv4
+            .broadcast
+            .or_else(|| subnet_broadcast(ip, ipv4.netmask));
+
+        interfaces.push(DiscoveryInterface { ip, broadcast });
+    }
+
+    Ok(interfaces)
+}
+
+fn subnet_broadcast(ip: Ipv4Addr, netmask: Ipv4Addr) -> Option<Ipv4Addr> {
+    let mask = u32::from(netmask);
+    if mask == u32::MAX {
+        return None;
+    }
+
+    Some(Ipv4Addr::from(u32::from(ip) | !mask))
+}
+
+fn join_multicast_on_active_interfaces(socket: &UdpSocket, multicast: Ipv4Addr) {
+    if !multicast.is_multicast() {
+        return;
+    }
+
+    for interface in active_ipv4_interfaces().unwrap_or_default() {
+        let _ = socket.join_multicast_v4(multicast, interface.ip);
+    }
+
+    let _ = socket.join_multicast_v4(multicast, Ipv4Addr::UNSPECIFIED);
+}
+
 fn local_share_name(library_root: &Path, share_id: ShareId) -> Option<String> {
     let shares = list_library_shares(library_root).ok()?;
     shares
@@ -149,4 +290,32 @@ fn decode_message(bytes: &[u8]) -> Result<DiscoveryMessage, bincode::error::Deco
     let (message, _read): (DiscoveryMessage, usize) =
         bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
     Ok(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn includes_global_loopback_and_multicast_targets() {
+        let targets = discovery_query_targets(37037, Some(DEFAULT_DISCOVERY_MULTICAST_ADDR));
+
+        assert!(targets.contains(&SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), 37037)));
+        assert!(targets.contains(&SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 37037)));
+        assert!(targets.contains(&SocketAddr::new(
+            IpAddr::V4(DEFAULT_DISCOVERY_MULTICAST_ADDR),
+            37037
+        )));
+    }
+
+    #[test]
+    fn computes_subnet_broadcast_from_ip_and_netmask() {
+        assert_eq!(
+            subnet_broadcast(
+                Ipv4Addr::new(192, 168, 1, 23),
+                Ipv4Addr::new(255, 255, 255, 0)
+            ),
+            Some(Ipv4Addr::new(192, 168, 1, 255))
+        );
+    }
 }
