@@ -167,53 +167,12 @@ fn add_file_to_library_streaming(
     let file_id = hash_file(input_path)?;
     let file_size = fs::metadata(input_path)?.len();
     let file_name = manifest_file_name(input_path);
-    let total_chunks = total_chunks_for_size(file_size, chunk_size);
     let staging = StagedChunkDir::create(library_root)?;
-    let mut input = File::open(input_path)?;
-    let mut buffer = vec![0_u8; chunk_size];
-    let mut chunk_metas = Vec::new();
-    let mut index = 0_u32;
 
-    loop {
-        let read = input.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-
-        let nonce = generate_nonce();
-        let aad = build_chunk_aad(file_id, index, read as u64);
-        let ciphertext = encrypt_chunk(&file_key, nonce, &buffer[..read], &aad)?;
-        let encrypted_hash = hash_chunk(&ciphertext);
-        let encrypted_size = ciphertext.len() as u64;
-
-        staging.write_chunk(index, &ciphertext)?;
-        chunk_metas.push(ChunkMeta {
-            index,
-            plain_size: read as u64,
-            encrypted_size,
-            nonce,
-            blake3_hash: encrypted_hash,
-        });
-
-        log_chunk_progress(
-            "daemon",
-            "staged+encrypted",
-            log_level,
-            chunk_metas.len(),
-            total_chunks,
-            index,
-            read,
-        );
-
-        if log_level.is_verbose() {
-            println!(
-                "[daemon] encrypted staged chunk {} (plain={} bytes, encrypted={} bytes)",
-                index, read, encrypted_size
-            );
-        }
-
-        index = index.saturating_add(1);
-    }
+    // Penerapan Rejected Hunk 1: Pindah ke enkripsi paralel mutakhir
+    let chunk_metas = encrypt_file_to_staging_parallel(
+        input_path, file_id, &file_key, chunk_size, &staging, log_level,
+    )?;
 
     let manifest = Manifest {
         file_id,
@@ -312,6 +271,164 @@ fn manifest_file_name(path: &Path) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "unnamed".to_string())
+}
+
+// Penerapan Rejected Hunk 2: Fungsi Pembantu Parallel Seeding
+fn encrypt_file_to_staging_parallel(
+    input_path: &Path,
+    file_id: FileId,
+    file_key: &SymmetricKey,
+    chunk_size: usize,
+    staging: &StagedChunkDir,
+    log_level: TransferLogLevel,
+) -> Result<Vec<ChunkMeta>, NetworkError> {
+    let worker_count = default_seed_worker_count();
+    let total_size = fs::metadata(input_path)?.len();
+    let total_chunks = total_chunks_for_size(total_size, chunk_size);
+
+    if log_level.is_normal() {
+        println!("[daemon] parallel seed encryption workers: {worker_count}");
+    }
+
+    let (plain_tx, plain_rx) = mpsc::sync_channel::<SeedPlainChunk>(worker_count * 2);
+    let plain_rx = Arc::new(Mutex::new(plain_rx));
+    let (encrypted_tx, encrypted_rx) =
+        mpsc::sync_channel::<Result<SeedEncryptedChunk, NetworkError>>(worker_count * 2);
+    let file_key = *file_key;
+
+    thread::scope(|scope| {
+        let writer = scope.spawn(move || -> Result<Vec<ChunkMeta>, NetworkError> {
+            let mut chunk_metas = Vec::new();
+
+            while let Ok(result) = encrypted_rx.recv() {
+                let encrypted = result?;
+                staging.write_chunk(encrypted.meta.index, &encrypted.ciphertext)?;
+
+                log_chunk_progress(
+                    "daemon",
+                    "staged+encrypted",
+                    log_level,
+                    chunk_metas.len() + 1,
+                    total_chunks,
+                    encrypted.meta.index,
+                    encrypted.meta.plain_size as usize,
+                );
+
+                if log_level.is_verbose() {
+                    println!(
+                        "[daemon] encrypted staged chunk {} (plain={} bytes, encrypted={} bytes)",
+                        encrypted.meta.index,
+                        encrypted.meta.plain_size,
+                        encrypted.meta.encrypted_size
+                    );
+                }
+
+                chunk_metas.push(encrypted.meta);
+            }
+
+            chunk_metas.sort_by_key(|meta| meta.index);
+            Ok(chunk_metas)
+        });
+
+        let mut workers = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let plain_rx = Arc::clone(&plain_rx);
+            let encrypted_tx = encrypted_tx.clone();
+
+            workers.push(scope.spawn(move || {
+                loop {
+                    let chunk = match plain_rx
+                        .expect_lock("parallel seed queue mutex poisoned")
+                        .recv()
+                    {
+                        Ok(chunk) => chunk,
+                        Err(_) => break,
+                    };
+
+                    let result = encrypt_seed_chunk(file_id, &file_key, chunk);
+                    if encrypted_tx.send(result).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+
+        drop(encrypted_tx);
+
+        let mut input = File::open(input_path)?;
+        let mut index = 0_u32;
+        loop {
+            let mut buffer = vec![0_u8; chunk_size];
+            let read = input.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+
+            buffer.truncate(read);
+            plain_tx
+                .send(SeedPlainChunk {
+                    index,
+                    data: buffer,
+                })
+                .map_err(|_| {
+                    NetworkError::PeerError("parallel seed worker stopped unexpectedly".to_string())
+                })?;
+            index = index.saturating_add(1);
+        }
+
+        drop(plain_tx);
+
+        for worker in workers {
+            worker.join().map_err(|_| {
+                NetworkError::PeerError("parallel seed worker panicked".to_string())
+            })?;
+        }
+
+        writer
+            .join()
+            .map_err(|_| NetworkError::PeerError("parallel seed writer panicked".to_string()))?
+    })
+}
+
+fn encrypt_seed_chunk(
+    file_id: FileId,
+    file_key: &SymmetricKey,
+    chunk: SeedPlainChunk,
+) -> Result<SeedEncryptedChunk, NetworkError> {
+    let nonce = generate_nonce();
+    let sample_len = chunk.data.len();
+    let aad = build_chunk_aad(file_id, chunk.index, sample_len as u64);
+    let ciphertext = encrypt_chunk(file_key, nonce, &chunk.data, &aad)?;
+    let encrypted_hash = hash_chunk(&ciphertext);
+    let encrypted_size = ciphertext.len() as u64;
+
+    Ok(SeedEncryptedChunk {
+        meta: ChunkMeta {
+            index: chunk.index,
+            plain_size: sample_len as u64,
+            encrypted_size,
+            nonce,
+            blake3_hash: encrypted_hash,
+        },
+        ciphertext,
+    })
+}
+
+fn default_seed_worker_count() -> usize {
+    thread::available_parallelism()
+        .map_or(2, usize::from)
+        .min(4)
+        .max(1)
+}
+
+struct SeedPlainChunk {
+    index: u32,
+    data: Vec<u8>,
+}
+
+struct SeedEncryptedChunk {
+    meta: ChunkMeta,
+    ciphertext: Vec<u8>,
 }
 
 fn total_chunks_for_size(total_size: u64, chunk_size: usize) -> usize {
@@ -1619,7 +1736,7 @@ async fn parallel_download_worker(
                     chunk_len,
                 );
             }
-            Err(error) => {
+            Result::Err(error) => {
                 queue
                     .expect_lock("parallel queue mutex poisoned")
                     .push_back(index);
