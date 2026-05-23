@@ -46,11 +46,6 @@ pub enum TransferLogLevel {
 
 impl TransferLogLevel {
     #[must_use]
-    pub const fn i_normal(self) -> bool {
-        matches!(self, Self::Normal | Self::Verbose)
-    }
-
-    #[must_use]
     pub const fn is_normal(self) -> bool {
         matches!(self, Self::Normal | Self::Verbose)
     }
@@ -126,6 +121,8 @@ impl DownloadFileOptions {
 }
 
 const STAGING_DIR_NAME: &str = "staging";
+// Penerapan Rej Hunk 1: Pengaturan sliding window pipeline
+const DEFAULT_REQUEST_WINDOW: usize = 16;
 const PROGRESS_FLUSH_CHUNK_INTERVAL: usize = 32;
 const PROGRESS_FLUSH_TIME_INTERVAL: Duration = Duration::from_millis(750);
 const RECONSTRUCT_WRITER_BUFFER_SIZE: usize = 8 * 1024 * 1024;
@@ -169,7 +166,6 @@ fn add_file_to_library_streaming(
     let file_name = manifest_file_name(input_path);
     let staging = StagedChunkDir::create(library_root)?;
 
-    // Penerapan Rejected Hunk 1: Pindah ke enkripsi paralel mutakhir
     let chunk_metas = encrypt_file_to_staging_parallel(
         input_path, file_id, &file_key, chunk_size, &staging, log_level,
     )?;
@@ -273,7 +269,6 @@ fn manifest_file_name(path: &Path) -> String {
         .unwrap_or_else(|| "unnamed".to_string())
 }
 
-// Penerapan Rejected Hunk 2: Fungsi Pembantu Parallel Seeding
 fn encrypt_file_to_staging_parallel(
     input_path: &Path,
     file_id: FileId,
@@ -297,12 +292,13 @@ fn encrypt_file_to_staging_parallel(
     let file_key = *file_key;
 
     thread::scope(|scope| {
+        let staging_ref = staging;
         let writer = scope.spawn(move || -> Result<Vec<ChunkMeta>, NetworkError> {
             let mut chunk_metas = Vec::new();
 
             while let Ok(result) = encrypted_rx.recv() {
                 let encrypted = result?;
-                staging.write_chunk(encrypted.meta.index, &encrypted.ciphertext)?;
+                staging_ref.write_chunk(encrypted.meta.index, &encrypted.ciphertext)?;
 
                 log_chunk_progress(
                     "daemon",
@@ -1454,84 +1450,19 @@ pub async fn download_file_from_peer_with_options(
         .await?;
     }
 
-    for meta in &manifest.chunks {
-        if completed_chunks.contains(&meta.index) {
-            log_chunk_progress(
-                "peer",
-                "reused",
-                log_level,
-                completed_chunks.len(),
-                total_chunks,
-                meta.index,
-                meta.encrypted_size as usize,
-            );
-            continue;
-        }
-
-        if !peer_available.contains(&meta.index) {
-            if log_level.is_verbose() {
-                println!(
-                    "[peer] skipping chunk {}: unavailable on this peer",
-                    meta.index
-                );
-            }
-            continue;
-        }
-
-        send_message(
-            &mut stream,
-            &WireMessage::RequestChunk { index: meta.index },
-        )
-        .await?;
-
-        match receive_message(&mut stream).await? {
-            WireMessage::Chunk { index, data } => {
-                if index != meta.index {
-                    return Err(NetworkError::UnexpectedChunkIndex {
-                        expected: meta.index,
-                        actual: index,
-                    });
-                }
-
-                let actual_hash = hash_chunk(&data);
-                if actual_hash != meta.blake3_hash {
-                    return Err(FileError::ChunkHashMismatch(meta.index).into());
-                }
-
-                let chunk_len = data.len();
-                if log_level.is_verbose() {
-                    println!("[peer] chunk {} hash verified: {}", meta.index, actual_hash);
-                }
-
-                let encrypted_chunk = EncryptedChunk { index, data };
-                persist_downloaded_chunk(
-                    &mut library_state,
-                    &encrypted_chunk,
-                    output_state_dir.clone(),
-                )?;
-
-                completed_chunks.insert(index);
-                if !streaming_to_library {
-                    chunks.insert(index, encrypted_chunk);
-                }
-                log_chunk_progress(
-                    "peer",
-                    "received+verified",
-                    log_level,
-                    completed_chunks.len(),
-                    total_chunks,
-                    index,
-                    chunk_len,
-                );
-            }
-            actual => {
-                return Err(NetworkError::UnexpectedMessage {
-                    expected: "Chunk",
-                    actual,
-                });
-            }
-        }
-    }
+    // Penerapan Rej Hunk 2: Menggunakan windowed sliding request
+    download_missing_chunks_windowed(
+        &mut stream,
+        &manifest,
+        &peer_available,
+        &mut library_state,
+        &mut chunks,
+        &mut completed_chunks,
+        streaming_to_library,
+        output_state_dir.clone(),
+        log_level,
+    )
+    .await?;
 
     if completed_chunks.len() != total_chunks {
         if let Some(meta) = manifest
@@ -1789,6 +1720,118 @@ async fn request_chunk_from_peer(
             actual,
         }),
     }
+}
+
+// Penerapan Rej Hunk 3: Penempatan fungsi windowed download
+async fn download_missing_chunks_windowed(
+    stream: &mut TcpStream,
+    manifest: &Manifest,
+    peer_available: &BTreeSet<u32>,
+    library_state: &mut Option<ActiveDownloadLibraryState>,
+    chunks: &mut BTreeMap<u32, EncryptedChunk>,
+    completed_chunks: &mut BTreeSet<u32>,
+    streaming_to_library: bool,
+    output_state_dir: Option<PathBuf>,
+    log_level: TransferLogLevel,
+) -> Result<(), NetworkError> {
+    let total_chunks = manifest.chunks.len();
+    let mut next_meta = 0_usize;
+    let mut in_flight = BTreeMap::<u32, ChunkMeta>::new();
+
+    for meta in &manifest.chunks {
+        if completed_chunks.contains(&meta.index) {
+            log_chunk_progress(
+                "peer",
+                "reused",
+                log_level,
+                completed_chunks.len(),
+                total_chunks,
+                meta.index,
+                meta.encrypted_size as usize,
+            );
+        }
+    }
+
+    loop {
+        while in_flight.len() < DEFAULT_REQUEST_WINDOW && next_meta < manifest.chunks.len() {
+            let meta = &manifest.chunks[next_meta];
+            next_meta += 1;
+
+            if completed_chunks.contains(&meta.index) {
+                continue;
+            }
+
+            if !peer_available.contains(&meta.index) {
+                if log_level.is_verbose() {
+                    println!(
+                        "[peer] skipping chunk {}: unavailable on this peer",
+                        meta.index
+                    );
+                }
+                continue;
+            }
+
+            send_message(stream, &WireMessage::RequestChunk { index: meta.index }).await?;
+            in_flight.insert(meta.index, meta.clone());
+        }
+
+        if in_flight.is_empty() {
+            break;
+        }
+
+        match receive_message(stream).await? {
+            WireMessage::Chunk { index, data } => {
+                let expected = in_flight.keys().next().copied().unwrap_or(index);
+                let meta = in_flight
+                    .remove(&index)
+                    .ok_or(NetworkError::UnexpectedChunkIndex {
+                        expected,
+                        actual: index,
+                    })?;
+
+                let actual_hash = hash_chunk(&data);
+                if actual_hash != meta.blake3_hash {
+                    return Err(FileError::ChunkHashMismatch(meta.index).into());
+                }
+
+                let chunk_len = data.len();
+                if log_level.is_verbose() {
+                    println!("[peer] chunk {} hash verified: {}", meta.index, actual_hash);
+                }
+
+                let encrypted_chunk = EncryptedChunk { index, data };
+                persist_downloaded_chunk(
+                    library_state,
+                    &encrypted_chunk,
+                    output_state_dir.clone(),
+                )?;
+
+                completed_chunks.insert(index);
+                if !streaming_to_library {
+                    chunks.insert(index, encrypted_chunk);
+                }
+
+                log_chunk_progress(
+                    "peer",
+                    "received+verified",
+                    log_level,
+                    completed_chunks.len(),
+                    total_chunks,
+                    index,
+                    chunk_len,
+                );
+            }
+            WireMessage::Error { message } => return Err(NetworkError::PeerError(message)),
+            actual => {
+                return Err(NetworkError::UnexpectedMessage {
+                    expected: "Chunk",
+                    actual,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn pop_next_available_missing_chunk(
