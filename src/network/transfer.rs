@@ -121,7 +121,6 @@ impl DownloadFileOptions {
 }
 
 const STAGING_DIR_NAME: &str = "staging";
-// Penerapan Rej Hunk 1: Pengaturan sliding window pipeline
 const DEFAULT_REQUEST_WINDOW: usize = 16;
 const PROGRESS_FLUSH_CHUNK_INTERVAL: usize = 32;
 const PROGRESS_FLUSH_TIME_INTERVAL: Duration = Duration::from_millis(750);
@@ -680,25 +679,354 @@ pub async fn serve_library_forever(
     let library_root = library_root.as_ref().to_path_buf();
 
     loop {
-        match serve_library_to_one_peer_from_listener(&listener, &library_root, options.clone())
-            .await
-        {
-            Ok(descriptor) => {
-                if options.log_level.is_normal() {
-                    println!(
-                        "[seeder] ready for next peer request: share=\"{}\", share_id={}",
-                        descriptor.name, descriptor.share_id
-                    );
+        let (stream, peer_addr) = accept_peer(&listener).await?;
+        let peer_library_root = library_root.clone();
+        let peer_options = options.clone();
+        let log_level = options.log_level;
+
+        tokio::spawn(async move {
+            match serve_library_connected_peer(stream, peer_addr, peer_library_root, peer_options)
+                .await
+            {
+                Ok(descriptor) => {
+                    if log_level.is_normal() {
+                        println!(
+                            "[seeder] peer session completed: share=\"{}\", share_id={}",
+                            descriptor.name, descriptor.share_id
+                        );
+                    }
+                }
+                Err(error) if log_level.is_normal() => {
+                    println!("[seeder] peer session failed: {error}");
+                }
+                Err(_) => {}
+            }
+        });
+
+        if options.log_level.is_normal() {
+            println!("[seeder] spawned peer session for {peer_addr}; listener remains available");
+        }
+    }
+}
+
+async fn serve_library_connected_peer(
+    mut stream: TcpStream,
+    peer_addr: SocketAddr,
+    library_root: PathBuf,
+    options: ServeFileOptions,
+) -> Result<EtleDescriptor, NetworkError> {
+    let ServeFileOptions {
+        seeder_id,
+        log_level,
+        library_root: _,
+    } = options;
+    let library_root = library_root.as_path();
+
+    if log_level.is_normal() {
+        println!("[seeder] peer connected: {peer_addr}");
+    }
+
+    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
+    if log_level.is_normal() {
+        println!("[seeder] hello handshake completed with {remote_peer_id}");
+    }
+
+    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
+    let session_key = derive_session_key(shared_secret);
+    if log_level.is_normal() {
+        println!("[seeder] key exchange completed");
+    }
+
+    let share_id = match receive_message(&mut stream).await? {
+        WireMessage::RequestShare { share_id } => share_id,
+        actual => {
+            return Err(NetworkError::UnexpectedMessage {
+                expected: "RequestShare",
+                actual,
+            });
+        }
+    };
+
+    let paths = LibraryPaths::for_share(library_root, share_id);
+    let descriptor = read_descriptor(&paths)?;
+    let secret = read_secret(&paths)?;
+    let manifest = manifest_from_descriptor(&descriptor)?;
+    let total_chunks = descriptor.chunks.len();
+    let available_chunks = available_chunk_indexes(&paths, &descriptor)?;
+    let available_set = available_chunks.iter().copied().collect::<BTreeSet<_>>();
+
+    if log_level.is_normal() {
+        println!(
+            "[seeder] peer requested share: name=\"{}\", share_id={}",
+            descriptor.name, descriptor.share_id
+        );
+    }
+
+    send_message(
+        &mut stream,
+        &WireMessage::Manifest {
+            manifest: manifest.clone(),
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] manifest sent from multi-share library");
+    }
+
+    let wrapped_file_key = wrap_file_key(&session_key, manifest.file_id, &secret.file_key)?;
+    send_message(
+        &mut stream,
+        &WireMessage::WrappedFileKey {
+            nonce: wrapped_file_key.nonce,
+            data: wrapped_file_key.data,
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] wrapped file key sent");
+    }
+
+    send_message(
+        &mut stream,
+        &WireMessage::Have {
+            chunks: available_chunks.clone(),
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!(
+            "[seeder] advertised {}/{} available chunks",
+            available_chunks.len(),
+            total_chunks
+        );
+    }
+
+    let mut served_or_known = BTreeSet::new();
+    while served_or_known.len() < total_chunks {
+        let message = match receive_message(&mut stream).await {
+            Ok(message) => message,
+            Err(error) if is_peer_closed_protocol_error(&error) => {
+                if log_level.is_normal() {
+                    println!("[seeder] peer disconnected before requesting all chunks");
+                }
+                return Ok(descriptor);
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        match message {
+            WireMessage::Have { chunks } => {
+                for index in chunks {
+                    if available_set.contains(&index) {
+                        served_or_known.insert(index);
+                    }
                 }
             }
-            Err(error) => {
-                if options.log_level.is_normal() {
-                    println!("[seeder] peer session failed: {error}");
-                    println!("[seeder] keeping multi-share listener alive");
+            WireMessage::RequestChunk { index } => {
+                if !available_set.contains(&index) {
+                    send_message(
+                        &mut stream,
+                        &WireMessage::Error {
+                            message: format!("chunk {index} is not available from this peer"),
+                        },
+                    )
+                    .await?;
+                    continue;
                 }
+
+                let meta = descriptor
+                    .chunks
+                    .iter()
+                    .find(|chunk| chunk.index == index)
+                    .ok_or(NetworkError::MissingEncryptedChunk(index))?;
+                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
+
+                send_message(
+                    &mut stream,
+                    &WireMessage::Chunk {
+                        index,
+                        data: chunk.data.clone(),
+                    },
+                )
+                .await?;
+
+                served_or_known.insert(index);
+                log_chunk_progress(
+                    "seeder",
+                    "served-from-library",
+                    log_level,
+                    served_or_known.len(),
+                    total_chunks,
+                    index,
+                    chunk.data.len(),
+                );
+            }
+            actual => {
+                return Err(NetworkError::UnexpectedMessage {
+                    expected: "Have or RequestChunk",
+                    actual,
+                });
             }
         }
     }
+
+    Ok(descriptor)
+}
+
+async fn serve_library_share_to_one_peer_from_listener(
+    listener: &TcpListener,
+    library_root: impl AsRef<Path>,
+    share_id: ShareId,
+    options: ServeFileOptions,
+) -> Result<EtleDescriptor, NetworkError> {
+    let ServeFileOptions {
+        seeder_id,
+        log_level,
+        library_root: _,
+    } = options;
+    let paths = LibraryPaths::for_share(library_root, share_id);
+    let descriptor = read_descriptor(&paths)?;
+    let secret = read_secret(&paths)?;
+    let manifest = manifest_from_descriptor(&descriptor)?;
+    let total_chunks = descriptor.chunks.len();
+    let available_chunks = available_chunk_indexes(&paths, &descriptor)?;
+    let available_set = available_chunks.iter().copied().collect::<BTreeSet<_>>();
+
+    let (mut stream, peer_addr) = listener.accept().await?;
+    if log_level.is_normal() {
+        println!("[seeder] peer connected: {peer_addr}");
+        println!(
+            "[seeder] loading share state: name=\"{}\", share_id={}",
+            descriptor.name, descriptor.share_id
+        );
+    }
+
+    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
+    if log_level.is_normal() {
+        println!("[seeder] hello handshake completed with {remote_peer_id}");
+    }
+
+    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
+    let session_key = derive_session_key(shared_secret);
+    if log_level.is_normal() {
+        println!("[seeder] key exchange completed");
+    }
+
+    send_message(
+        &mut stream,
+        &WireMessage::Manifest {
+            manifest: manifest.clone(),
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] manifest sent from persisted state");
+    }
+
+    let wrapped_file_key = wrap_file_key(&session_key, manifest.file_id, &secret.file_key)?;
+    send_message(
+        &mut stream,
+        &WireMessage::WrappedFileKey {
+            nonce: wrapped_file_key.nonce,
+            data: wrapped_file_key.data,
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!("[seeder] wrapped file key sent");
+    }
+
+    send_message(
+        &mut stream,
+        &WireMessage::Have {
+            chunks: available_chunks.clone(),
+        },
+    )
+    .await?;
+
+    if log_level.is_normal() {
+        println!(
+            "[seeder] advertised {}/{} available chunks",
+            available_chunks.len(),
+            total_chunks
+        );
+    }
+
+    let mut served_or_known = BTreeSet::new();
+    while served_or_known.len() < total_chunks {
+        let message = match receive_message(&mut stream).await {
+            Ok(message) => message,
+            Err(error) if is_peer_closed_protocol_error(&error) => {
+                if log_level.is_normal() {
+                    println!("[seeder] peer disconnected before requesting all chunks");
+                }
+                return Ok(descriptor);
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        match message {
+            WireMessage::Have { chunks } => {
+                for index in chunks {
+                    if available_set.contains(&index) {
+                        served_or_known.insert(index);
+                    }
+                }
+            }
+            WireMessage::RequestChunk { index } => {
+                if !available_set.contains(&index) {
+                    send_message(
+                        &mut stream,
+                        &WireMessage::Error {
+                            message: format!("chunk {index} is not available from this peer"),
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
+
+                let meta = descriptor
+                    .chunks
+                    .iter()
+                    .find(|chunk| chunk.index == index)
+                    .ok_or(NetworkError::MissingEncryptedChunk(index))?;
+                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
+
+                send_message(
+                    &mut stream,
+                    &WireMessage::Chunk {
+                        index,
+                        data: chunk.data.clone(),
+                    },
+                )
+                .await?;
+
+                served_or_known.insert(index);
+                log_chunk_progress(
+                    "seeder",
+                    "served-from-state",
+                    log_level,
+                    served_or_known.len(),
+                    total_chunks,
+                    index,
+                    chunk.data.len(),
+                );
+            }
+            actual => {
+                return Err(NetworkError::UnexpectedMessage {
+                    expected: "Have or RequestChunk",
+                    actual,
+                });
+            }
+        }
+    }
+
+    Ok(descriptor)
 }
 
 async fn serve_library_to_one_peer_from_listener(
@@ -857,167 +1185,6 @@ async fn serve_library_to_one_peer_from_listener(
                 log_chunk_progress(
                     "seeder",
                     "served-from-library",
-                    log_level,
-                    served_or_known.len(),
-                    total_chunks,
-                    index,
-                    chunk.data.len(),
-                );
-            }
-            actual => {
-                return Err(NetworkError::UnexpectedMessage {
-                    expected: "Have or RequestChunk",
-                    actual,
-                });
-            }
-        }
-    }
-
-    Ok(descriptor)
-}
-
-async fn serve_library_share_to_one_peer_from_listener(
-    listener: &TcpListener,
-    library_root: impl AsRef<Path>,
-    share_id: ShareId,
-    options: ServeFileOptions,
-) -> Result<EtleDescriptor, NetworkError> {
-    let ServeFileOptions {
-        seeder_id,
-        log_level,
-        library_root: _,
-    } = options;
-    let paths = LibraryPaths::for_share(library_root, share_id);
-    let descriptor = read_descriptor(&paths)?;
-    let secret = read_secret(&paths)?;
-    let manifest = manifest_from_descriptor(&descriptor)?;
-    let total_chunks = descriptor.chunks.len();
-    let available_chunks = available_chunk_indexes(&paths, &descriptor)?;
-    let available_set = available_chunks.iter().copied().collect::<BTreeSet<_>>();
-
-    let (mut stream, peer_addr) = accept_peer(listener).await?;
-    if log_level.is_normal() {
-        println!("[seeder] peer connected: {peer_addr}");
-        println!(
-            "[seeder] loading share state: name=\"{}\", share_id={}",
-            descriptor.name, descriptor.share_id
-        );
-    }
-
-    let remote_peer_id = server_hello_handshake(&mut stream, seeder_id).await?;
-    if log_level.is_normal() {
-        println!("[seeder] hello handshake completed with {remote_peer_id}");
-    }
-
-    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
-    let session_key = derive_session_key(shared_secret);
-    if log_level.is_normal() {
-        println!("[seeder] key exchange completed");
-    }
-
-    send_message(
-        &mut stream,
-        &WireMessage::Manifest {
-            manifest: manifest.clone(),
-        },
-    )
-    .await?;
-
-    if log_level.is_normal() {
-        println!("[seeder] manifest sent from persisted state");
-    }
-
-    let wrapped_file_key = wrap_file_key(&session_key, manifest.file_id, &secret.file_key)?;
-    send_message(
-        &mut stream,
-        &WireMessage::WrappedFileKey {
-            nonce: wrapped_file_key.nonce,
-            data: wrapped_file_key.data,
-        },
-    )
-    .await?;
-
-    if log_level.is_normal() {
-        println!("[seeder] wrapped file key sent");
-    }
-
-    send_message(
-        &mut stream,
-        &WireMessage::Have {
-            chunks: available_chunks.clone(),
-        },
-    )
-    .await?;
-
-    if log_level.is_normal() {
-        println!(
-            "[seeder] advertised {}/{} available chunks",
-            available_chunks.len(),
-            total_chunks
-        );
-    }
-
-    let mut served_or_known = BTreeSet::new();
-    while served_or_known.len() < total_chunks {
-        let message = match receive_message(&mut stream).await {
-            Ok(message) => message,
-            Err(error) if is_peer_closed_protocol_error(&error) => {
-                if log_level.is_normal() {
-                    println!("[seeder] peer disconnected before requesting all chunks");
-                }
-                return Ok(descriptor);
-            }
-            Err(error) => return Err(error.into()),
-        };
-
-        match message {
-            WireMessage::Have { chunks } => {
-                for index in chunks {
-                    if available_set.contains(&index) {
-                        served_or_known.insert(index);
-                    }
-                }
-
-                if log_level.is_normal() {
-                    println!(
-                        "[seeder] peer already has {}/{} chunks",
-                        served_or_known.len(),
-                        total_chunks
-                    );
-                }
-            }
-            WireMessage::RequestChunk { index } => {
-                if !available_set.contains(&index) {
-                    send_message(
-                        &mut stream,
-                        &WireMessage::Error {
-                            message: format!("chunk {index} is not available from this peer"),
-                        },
-                    )
-                    .await?;
-                    continue;
-                }
-
-                let meta = descriptor
-                    .chunks
-                    .iter()
-                    .find(|chunk| chunk.index == index)
-                    .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                let chunk = read_encrypted_chunk(&paths, index, meta.encrypted_size)?;
-
-                send_message(
-                    &mut stream,
-                    &WireMessage::Chunk {
-                        index,
-                        data: chunk.data.clone(),
-                    },
-                )
-                .await?;
-
-                served_or_known.insert(index);
-                log_chunk_progress(
-                    "seeder",
-                    "served-from-state",
                     log_level,
                     served_or_known.len(),
                     total_chunks,
@@ -1450,7 +1617,6 @@ pub async fn download_file_from_peer_with_options(
         .await?;
     }
 
-    // Penerapan Rej Hunk 2: Menggunakan windowed sliding request
     download_missing_chunks_windowed(
         &mut stream,
         &manifest,
@@ -1722,7 +1888,6 @@ async fn request_chunk_from_peer(
     }
 }
 
-// Penerapan Rej Hunk 3: Penempatan fungsi windowed download
 async fn download_missing_chunks_windowed(
     stream: &mut TcpStream,
     manifest: &Manifest,
@@ -1954,10 +2119,6 @@ fn manifest_from_descriptor(descriptor: &EtleDescriptor) -> Result<Manifest, Net
         chunk_size: descriptor.chunk_size,
         chunks: descriptor.chunks.clone(),
     })
-}
-
-fn publish_share_updated_event(_share: &crate::ipc::IpcShareSummary) {
-    // Penampung event - implementasi Sprint lanjutan
 }
 
 fn persist_seed_library_state(
