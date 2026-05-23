@@ -1347,7 +1347,6 @@ pub async fn download_file_from_peers_parallel_with_options(
     }
 
     let total_chunks = manifest.chunks.len();
-    let progress_context = descriptor.share_id.to_string();
     let queue = Arc::new(Mutex::new(missing_chunks));
     let completed_chunks = Arc::new(Mutex::new(completed_chunks));
     let state = Arc::new(Mutex::new(library_state));
@@ -1362,11 +1361,9 @@ pub async fn download_file_from_peers_parallel_with_options(
         let manifest = Arc::clone(&manifest);
         let output_state_dir = output_state_dir.clone();
         let log_level = options.log_level;
-        let progress_context = progress_context.clone();
 
         handles.push(tokio::spawn(async move {
             parallel_download_worker(
-                progress_context,
                 peer,
                 manifest,
                 queue,
@@ -1574,10 +1571,7 @@ pub async fn download_file_from_peer_with_options(
         .await?;
     }
 
-    let progress_context = descriptor.share_id.to_string();
-
     download_missing_chunks_windowed(
-        &progress_context,
         &mut stream,
         &manifest,
         &peer_available,
@@ -1738,7 +1732,6 @@ async fn connect_download_peer(
 
 #[allow(clippy::too_many_arguments)]
 async fn parallel_download_worker(
-    progress_context: String,
     mut peer: ConnectedDownloadPeer,
     manifest: Arc<Manifest>,
     queue: Arc<Mutex<VecDeque<u32>>>,
@@ -1788,8 +1781,8 @@ async fn parallel_download_worker(
                     chunks.len()
                 };
 
-                log_chunk_progress_with_label(
-                    &progress_context,
+                log_chunk_progress_for_share(
+                    share_id,
                     "peer",
                     "parallel received+verified",
                     log_level,
@@ -1864,7 +1857,6 @@ async fn request_chunk_from_peer(
 
 #[allow(clippy::too_many_arguments)]
 async fn download_missing_chunks_windowed(
-    progress_context: &str,
     stream: &mut TcpStream,
     manifest: &Manifest,
     peer_available: &BTreeSet<u32>,
@@ -1893,8 +1885,8 @@ async fn download_missing_chunks_windowed(
 
     for meta in &manifest.chunks {
         if completed_chunks.contains(&meta.index) {
-            log_chunk_progress_with_label(
-                progress_context,
+            log_chunk_progress_for_share(
+                share_id,
                 "peer",
                 "reused",
                 log_level,
@@ -1965,8 +1957,8 @@ async fn download_missing_chunks_windowed(
                     chunks.insert(index, encrypted_chunk);
                 }
 
-                log_chunk_progress_with_label(
-                    progress_context,
+                log_chunk_progress_for_share(
+                    share_id,
                     "peer",
                     "received+verified",
                     log_level,

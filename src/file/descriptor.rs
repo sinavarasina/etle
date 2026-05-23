@@ -6,7 +6,7 @@ use crate::{crypto::hash::FileId, file::manifest::ChunkMeta};
 
 pub const ETLE_DESCRIPTOR_VERSION: u16 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ShareId(pub [u8; 32]);
 
 impl ShareId {
