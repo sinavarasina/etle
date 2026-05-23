@@ -66,12 +66,13 @@ where
         len: usize::MAX,
         max: MAX_FRAME_SIZE,
     })?;
-    let frame_len = RAW_CHUNK_HEADER_SIZE.checked_add(data_len).ok_or(
-        ProtocolError::FrameTooLarge {
-            len: usize::MAX,
-            max: MAX_FRAME_SIZE,
-        },
-    )?;
+    let frame_len =
+        RAW_CHUNK_HEADER_SIZE
+            .checked_add(data_len)
+            .ok_or(ProtocolError::FrameTooLarge {
+                len: usize::MAX,
+                max: MAX_FRAME_SIZE,
+            })?;
     validate_frame_len(frame_len)?;
 
     writer.write_all(&(frame_len as u32).to_be_bytes()).await?;

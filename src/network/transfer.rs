@@ -770,8 +770,13 @@ async fn serve_library_connected_peer(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                send_raw_chunk_file(&mut stream, index, paths.chunk_path(index), meta.encrypted_size)
-                    .await?;
+                send_raw_chunk_file(
+                    &mut stream,
+                    index,
+                    paths.chunk_path(index),
+                    meta.encrypted_size,
+                )
+                .await?;
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
@@ -933,8 +938,13 @@ async fn serve_library_share_connected_peer(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                send_raw_chunk_file(&mut stream, index, paths.chunk_path(index), meta.encrypted_size)
-                    .await?;
+                send_raw_chunk_file(
+                    &mut stream,
+                    index,
+                    paths.chunk_path(index),
+                    meta.encrypted_size,
+                )
+                .await?;
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
@@ -1101,8 +1111,13 @@ pub async fn serve_library_to_one_peer_from_listener(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
-                send_raw_chunk_file(&mut stream, index, paths.chunk_path(index), meta.encrypted_size)
-                    .await?;
+                send_raw_chunk_file(
+                    &mut stream,
+                    index,
+                    paths.chunk_path(index),
+                    meta.encrypted_size,
+                )
+                .await?;
 
                 served_or_known.insert(index);
                 log_chunk_progress_with_context(
@@ -2632,6 +2647,36 @@ fn is_peer_closed_protocol_error(error: &ProtocolError) -> bool {
     )
 }
 
+pub fn register_transfer_job(share_id: ShareId, job_id: impl Into<String>) {
+    active_transfer_jobs()
+        .lock()
+        .expect("transfer job registry mutex poisoned")
+        .insert(share_id, job_id.into());
+}
+
+pub fn unregister_transfer_job(share_id: ShareId, job_id: &str) {
+    let mut jobs = active_transfer_jobs()
+        .lock()
+        .expect("transfer job registry mutex poisoned");
+
+    if jobs.get(&share_id).is_some_and(|active| active == job_id) {
+        jobs.remove(&share_id);
+    }
+}
+
+fn active_transfer_job_id(share_id: ShareId) -> Option<String> {
+    active_transfer_jobs()
+        .lock()
+        .expect("transfer job registry mutex poisoned")
+        .get(&share_id)
+        .cloned()
+}
+
+fn active_transfer_jobs() -> &'static Mutex<BTreeMap<ShareId, String>> {
+    static JOBS: OnceLock<Mutex<BTreeMap<ShareId, String>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 pub fn log_chunk_progress(
     role: &str,
     action: &str,
@@ -2666,7 +2711,6 @@ fn log_chunk_progress_for_share(
         bytes,
     );
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn log_chunk_progress_with_label(
@@ -2707,15 +2751,7 @@ fn log_chunk_progress_with_context(
         .map(|share_id| share_id.to_string())
         .unwrap_or_else(|| "global".to_string());
     log_chunk_progress_with_context_label(
-        context,
-        share_id,
-        role,
-        action,
-        log_level,
-        done,
-        total,
-        index,
-        bytes,
+        context, share_id, role, action, log_level, done, total, index, bytes,
     );
 }
 
@@ -2770,6 +2806,7 @@ fn log_chunk_progress_with_context_label(
 
     if let Some(share_id) = share_id {
         publish_ipc_event(IpcEvent::TransferProgress {
+            job_id: active_transfer_job_id(share_id),
             share_id,
             completed_chunks: done,
             total_chunks: total,

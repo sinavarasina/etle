@@ -19,6 +19,7 @@ use crate::{
     network::{
         DownloadFileOptions, TransferLogLevel, add_file_to_library,
         download_file_from_peers_parallel_with_options, download_file_from_peers_with_options,
+        register_transfer_job, unregister_transfer_job,
     },
     state::{LocalShareSummary, OUTPUT_DIR_NAME, ShareMode, list_library_shares},
 };
@@ -293,6 +294,13 @@ fn run_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Path)
     }
 }
 
+fn generate_job_id(prefix: &str, share_id: ShareId) -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    format!("{prefix}-{share_id}-{millis}-{}", std::process::id())
+}
+
 fn queue_download_command(
     share_id: ShareId,
     peers: Vec<SocketAddr>,
@@ -303,6 +311,9 @@ fn queue_download_command(
     library_root: &Path,
 ) -> IpcResponse {
     let library_root = library_root.to_path_buf();
+    let job_id = generate_job_id("download", share_id);
+    register_transfer_job(share_id, job_id.clone());
+    let task_job_id = job_id.clone();
 
     tokio::spawn(async move {
         match handle_download_command(
@@ -324,6 +335,7 @@ fn queue_download_command(
                 ..
             } => {
                 publish_ipc_event(IpcEvent::TransferCompleted {
+                    job_id: Some(task_job_id.clone()),
                     share_id,
                     output: output.clone(),
                 });
@@ -341,9 +353,11 @@ fn queue_download_command(
             }
             other => println!("[daemon] download job finished: {other:?}"),
         }
+
+        unregister_transfer_job(share_id, &task_job_id);
     });
 
-    IpcResponse::TransferQueued { share_id }
+    IpcResponse::TransferQueued { share_id, job_id }
 }
 
 async fn handle_download_command(

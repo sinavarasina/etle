@@ -176,7 +176,6 @@ impl ShareState {
     }
 }
 
-
 const COMPACT_PROGRESS_MAGIC: &[u8; 8] = b"ETLEPRG2";
 const COMPACT_STATE_MAGIC: &[u8; 8] = b"ETLESTA2";
 
@@ -230,7 +229,9 @@ impl CompactShareState {
     }
 }
 
-fn encode_compact_progress(progress: &DownloadProgress) -> Result<Vec<u8>, bincode::error::EncodeError> {
+fn encode_compact_progress(
+    progress: &DownloadProgress,
+) -> Result<Vec<u8>, bincode::error::EncodeError> {
     encode_with_magic(
         COMPACT_PROGRESS_MAGIC,
         &CompactDownloadProgress::from_progress(progress),

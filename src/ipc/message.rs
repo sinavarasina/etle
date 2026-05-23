@@ -54,6 +54,7 @@ pub enum IpcResponse {
     },
     TransferQueued {
         share_id: ShareId,
+        job_id: String,
     },
     TransferCompleted {
         share_id: ShareId,
@@ -95,6 +96,7 @@ pub enum IpcEvent {
         total_chunks: usize,
     },
     TransferProgress {
+        job_id: Option<String>,
         share_id: ShareId,
         completed_chunks: usize,
         total_chunks: usize,
@@ -103,6 +105,7 @@ pub enum IpcEvent {
         bytes_per_second: u64,
     },
     TransferCompleted {
+        job_id: Option<String>,
         share_id: ShareId,
         output: PathBuf,
     },

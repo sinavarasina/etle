@@ -28,7 +28,7 @@ enum Command {
     /// Serve any local library share requested by peers over one P2P port.
     Serve {
         /// TCP listen address for the P2P transfer server.
-        #[arg(long, default_value = "127.0.0.1:7000")]
+        #[arg(long, default_value = "0.0.0.0:7000")]
         listen: SocketAddr,
 
         /// Local peer identifier sent during hello handshake.

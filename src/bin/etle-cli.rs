@@ -211,8 +211,9 @@ fn print_response(response: IpcResponse) -> anyhow::Result<()> {
             println!("[daemon] share added");
             print_share(&share);
         }
-        IpcResponse::TransferQueued { share_id } => {
+        IpcResponse::TransferQueued { share_id, job_id } => {
             println!("[daemon] transfer queued: {share_id}");
+            println!("[daemon] job_id: {job_id}");
         }
         IpcResponse::TransferCompleted {
             share_id,
@@ -252,6 +253,7 @@ fn print_event(event: IpcEvent) {
             println!("[event] chunk completed: {share_id} chunks={completed_chunks}/{total_chunks}")
         }
         IpcEvent::TransferProgress {
+            job_id,
             share_id,
             completed_chunks,
             total_chunks,
@@ -259,10 +261,23 @@ fn print_event(event: IpcEvent) {
             total_bytes,
             bytes_per_second,
         } => println!(
-            "[event] progress: {share_id} chunks={completed_chunks}/{total_chunks} bytes={bytes_done}/{total_bytes} speed={bytes_per_second} B/s"
+            "[event] progress: job={} share={} chunks={}/{} bytes={}/{} speed={} B/s",
+            job_id.as_deref().unwrap_or("unknown"),
+            share_id,
+            completed_chunks,
+            total_chunks,
+            bytes_done,
+            total_bytes,
+            bytes_per_second,
         ),
-        IpcEvent::TransferCompleted { share_id, output } => println!(
-            "[event] transfer completed: {share_id} output={}",
+        IpcEvent::TransferCompleted {
+            job_id,
+            share_id,
+            output,
+        } => println!(
+            "[event] transfer completed: job={} share={} output={}",
+            job_id.as_deref().unwrap_or("unknown"),
+            share_id,
             output.display()
         ),
         IpcEvent::Error { message } => eprintln!("[event] error: {message}"),
