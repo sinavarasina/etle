@@ -53,10 +53,19 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
     assert_eq!(decoded_event, event);
 }
 
+#[cfg(unix)]
 #[test]
 fn ipc_paths_are_under_etle_state_directory() {
     let path = default_ipc_socket_path(PathBuf::from("/tmp/etle-root"));
     assert_eq!(path, PathBuf::from("/tmp/etle-root/.etle/etled.sock"));
+    assert_eq!(default_windows_pipe_name(), r"\\.\pipe\etled");
+}
+
+#[cfg(windows)]
+#[test]
+fn ipc_paths_use_windows_named_pipe() {
+    let path = default_ipc_socket_path(PathBuf::from(r"C:\Temp\etle-root"));
+    assert_eq!(path, PathBuf::from(r"\\.\pipe\etled"));
     assert_eq!(default_windows_pipe_name(), r"\\.\pipe\etled");
 }
 
