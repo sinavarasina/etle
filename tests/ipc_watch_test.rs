@@ -92,8 +92,5 @@ fn temp_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    std::env::temp_dir().join(format!(
-        "etle-{name}-{}-{millis}",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("etle-{name}-{}-{millis}", std::process::id()))
 }

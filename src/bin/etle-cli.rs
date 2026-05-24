@@ -9,9 +9,7 @@ use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cli")]
 use etle::{
-    discovery::{
-        DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, DEFAULT_DISCOVERY_TIMEOUT_MS,
-    },
+    config::load_config,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
         IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, default_ipc_socket_path,
@@ -81,24 +79,24 @@ enum Command {
         no_resume: bool,
 
         /// Parallel peer workers: 0=auto by resolved peer count, 1=sequential fallback, N=parallel workers.
-        #[arg(long, default_value_t = 0, value_name = "N")]
-        parallel: usize,
+        #[arg(long, value_name = "N")]
+        parallel: Option<usize>,
 
         /// Number of chunk requests kept in flight per peer connection.
-        #[arg(long, default_value_t = 16, value_name = "CHUNKS")]
-        request_window: usize,
+        #[arg(long, value_name = "CHUNKS")]
+        request_window: Option<usize>,
 
         /// UDP port used for LAN peer discovery when --peer is omitted.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT, value_name = "PORT")]
-        discovery_port: u16,
+        #[arg(long, value_name = "PORT")]
+        discovery_port: Option<u16>,
 
         /// LAN discovery timeout in milliseconds when --peer is omitted.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_TIMEOUT_MS, value_name = "MS")]
-        discovery_timeout_ms: u64,
+        #[arg(long, value_name = "MS")]
+        discovery_timeout_ms: Option<u64>,
 
         /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR, value_name = "IPv4")]
-        discovery_multicast: Ipv4Addr,
+        #[arg(long, value_name = "IPv4")]
+        discovery_multicast: Option<Ipv4Addr>,
     },
 
     /// Send direct daemon control commands.
@@ -128,9 +126,12 @@ enum DaemonCommand {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let config = load_config()?;
+    let library_root = config.library_root().unwrap_or_else(default_library_root);
     let socket_path = cli
         .ipc_socket
-        .unwrap_or_else(|| default_ipc_socket_path(default_library_root()));
+        .or_else(|| config.ipc_socket())
+        .unwrap_or_else(|| default_ipc_socket_path(&library_root));
 
     if cli.verbose {
         println!("[cli] ipc socket: {}", socket_path.display());
@@ -164,6 +165,14 @@ async fn main() -> anyhow::Result<()> {
             discovery_timeout_ms,
             discovery_multicast,
         } => {
+            let parallel = parallel.unwrap_or_else(|| config.parallel());
+            let request_window = request_window.unwrap_or_else(|| config.request_window());
+            let discovery_port = discovery_port.unwrap_or_else(|| config.discovery_port());
+            let discovery_timeout_ms =
+                discovery_timeout_ms.unwrap_or_else(|| config.discovery_timeout_ms());
+            let discovery_multicast =
+                discovery_multicast.unwrap_or_else(|| config.discovery_multicast());
+
             if no_resume {
                 IpcCommand::DownloadFresh {
                     share_id,

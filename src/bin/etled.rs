@@ -6,10 +6,8 @@ use std::{
 use clap::{Parser, Subcommand};
 
 use etle::{
-    discovery::{
-        DEFAULT_DISCOVERY_MULTICAST_ADDR, DEFAULT_DISCOVERY_PORT, DiscoveryOptions,
-        serve_discovery_forever_with_options,
-    },
+    config::{default_listen_addr, load_config},
+    discovery::{DiscoveryOptions, serve_discovery_forever_with_options},
     ipc::{default_ipc_socket_path, serve_ipc_forever},
     network::{ServeFileOptions, TransferLogLevel, bind_listener, serve_library_forever},
     state::{default_library_root, list_library_shares},
@@ -35,8 +33,8 @@ enum Command {
     /// Serve any local library share requested by peers over one P2P port.
     Serve {
         /// TCP listen address for the P2P transfer server. Defaults to 0.0.0.0:7000 so LAN peers can connect.
-        #[arg(long, default_value = "0.0.0.0:7000", value_name = "ADDR:PORT")]
-        listen: SocketAddr,
+        #[arg(long, value_name = "ADDR:PORT")]
+        listen: Option<SocketAddr>,
 
         /// Local peer identifier sent during hello handshake.
         #[arg(long, default_value = "etle-daemon")]
@@ -55,12 +53,12 @@ enum Command {
         no_ipc: bool,
 
         /// UDP port used for LAN peer discovery.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT, value_name = "PORT")]
-        discovery_port: u16,
+        #[arg(long, value_name = "PORT")]
+        discovery_port: Option<u16>,
 
         /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR, value_name = "IPv4")]
-        discovery_multicast: Ipv4Addr,
+        #[arg(long, value_name = "IPv4")]
+        discovery_multicast: Option<Ipv4Addr>,
 
         /// Disable LAN peer discovery.
         #[arg(long)]
@@ -71,6 +69,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let config = load_config()?;
     let log_level = if cli.verbose {
         TransferLogLevel::Verbose
     } else {
@@ -88,8 +87,17 @@ async fn main() -> anyhow::Result<()> {
             discovery_multicast,
             no_discovery,
         } => {
-            let library_root = library_root.unwrap_or_else(default_library_root);
-            let ipc_socket = ipc_socket.unwrap_or_else(|| default_ipc_socket_path(&library_root));
+            let library_root = library_root
+                .or_else(|| config.library_root())
+                .unwrap_or_else(default_library_root);
+            let listen =
+                listen.unwrap_or_else(|| config.listen.unwrap_or_else(default_listen_addr));
+            let discovery_port = discovery_port.unwrap_or_else(|| config.discovery_port());
+            let discovery_multicast =
+                discovery_multicast.unwrap_or_else(|| config.discovery_multicast());
+            let ipc_socket = ipc_socket
+                .or_else(|| config.ipc_socket())
+                .unwrap_or_else(|| default_ipc_socket_path(&library_root));
             print_startup_banner(&library_root, listen)?;
 
             let listener = bind_listener(listen).await?;
