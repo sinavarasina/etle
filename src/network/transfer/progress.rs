@@ -137,6 +137,17 @@ fn with_context_label(
             total_bytes,
             bytes_per_second: average_rate as u64,
         });
+    } else {
+        events::publish(IpcEvent::TaskProgress {
+            job_id: None,
+            task: format!("{role}:{action}"),
+            label: key.context.clone(),
+            completed_chunks: done,
+            total_chunks: total,
+            bytes_done: state.bytes_done,
+            total_bytes,
+            bytes_per_second: average_rate as u64,
+        });
     }
 
     if done >= total {

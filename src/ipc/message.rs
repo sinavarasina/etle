@@ -106,6 +106,16 @@ pub enum IpcEvent {
         completed_chunks: usize,
         total_chunks: usize,
     },
+    TaskProgress {
+        job_id: Option<String>,
+        task: String,
+        label: String,
+        completed_chunks: usize,
+        total_chunks: usize,
+        bytes_done: u64,
+        total_bytes: u64,
+        bytes_per_second: u64,
+    },
     TransferProgress {
         job_id: Option<String>,
         share_id: ShareId,

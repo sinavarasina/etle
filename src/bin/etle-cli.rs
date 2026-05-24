@@ -301,6 +301,26 @@ fn print_event(event: IpcEvent) {
         } => {
             println!("[event] chunk completed: {share_id} chunks={completed_chunks}/{total_chunks}")
         }
+        IpcEvent::TaskProgress {
+            job_id,
+            task,
+            label,
+            completed_chunks,
+            total_chunks,
+            bytes_done,
+            total_bytes,
+            bytes_per_second,
+        } => println!(
+            "[event] task progress: job={} task={} label=\"{}\" chunks={}/{} bytes={}/{} speed={} B/s",
+            job_id.as_deref().unwrap_or("unknown"),
+            task,
+            label,
+            completed_chunks,
+            total_chunks,
+            bytes_done,
+            total_bytes,
+            bytes_per_second,
+        ),
         IpcEvent::TransferProgress {
             job_id,
             share_id,

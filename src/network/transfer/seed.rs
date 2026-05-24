@@ -200,7 +200,7 @@ fn encrypt_file_to_staging_parallel(
     let (encrypted_tx, encrypted_rx) =
         mpsc::sync_channel::<Result<SeedEncryptedChunk, NetworkError>>(worker_count * 2);
     let file_key = *file_key;
-    let progress_context = file_id.to_string();
+    let progress_context = input_path.display().to_string();
 
     thread::scope(|scope| {
         let staging_ref = staging;
