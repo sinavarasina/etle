@@ -6,7 +6,11 @@ use std::{
 use etle::{
     crypto::{
         hash::hash_file,
-        key_exchange::{EphemeralKeypair, derive_file_key},
+        key_exchange::{
+            AuthPsk, AuthRole, EphemeralKeypair, auth_tags_equal, derive_auth_tag,
+            derive_session_key_with_transcript,
+        },
+        key_wrap::{generate_file_key, unwrap_file_key, wrap_file_key},
     },
     file::{
         chunker::{DEFAULT_CHUNK_SIZE, read_file_chunks},
@@ -54,21 +58,57 @@ fn main() -> anyhow::Result<()> {
     }
     println!();
 
-    println!("== step 3: encrypt ==");
+    println!("== step 3: authenticated session ==");
+    let psk = example_psk();
     let seeder = EphemeralKeypair::generate();
     let peer = EphemeralKeypair::generate();
     let seeder_public_key = seeder.public_key();
     let peer_public_key = peer.public_key();
 
-    let seeder_key = derive_file_key(seeder.diffie_hellman(peer_public_key)?, file_id);
-    let peer_key = derive_file_key(peer.diffie_hellman(seeder_public_key)?, file_id);
+    let seeder_shared = seeder.diffie_hellman(peer_public_key)?;
+    let peer_shared = peer.diffie_hellman(seeder_public_key)?;
+    let seeder_session_key =
+        derive_session_key_with_transcript(seeder_shared, peer_public_key, seeder_public_key);
+    let peer_session_key =
+        derive_session_key_with_transcript(peer_shared, peer_public_key, seeder_public_key);
+    anyhow::ensure!(
+        seeder_session_key == peer_session_key,
+        "session keys do not match"
+    );
 
-    anyhow::ensure!(seeder_key == peer_key, "derived file keys do not match");
+    let peer_proof = derive_auth_tag(
+        &psk,
+        &peer_session_key,
+        peer_public_key,
+        seeder_public_key,
+        AuthRole::Client,
+    );
+    let expected_peer_proof = derive_auth_tag(
+        &psk,
+        &seeder_session_key,
+        peer_public_key,
+        seeder_public_key,
+        AuthRole::Client,
+    );
+    anyhow::ensure!(
+        auth_tags_equal(&peer_proof, &expected_peer_proof),
+        "client PSK proof failed"
+    );
+    println!("psk auth: OK");
+    println!();
 
-    let encrypted = encrypt_file(&input, &seeder_key, DEFAULT_CHUNK_SIZE)?;
+    println!("== step 4: encrypt + persist debug workspace ==");
+    let file_key = generate_file_key();
+    let wrapped = wrap_file_key(&seeder_session_key, file_id, &file_key)?;
+    let peer_file_key = unwrap_file_key(&peer_session_key, file_id, &wrapped)?;
+    anyhow::ensure!(peer_file_key == file_key, "unwrapped file key does not match");
+
+    let encrypted = encrypt_file(&input, &file_key, DEFAULT_CHUNK_SIZE)?;
     write_debug_workspace(&encrypted, &workspace)?;
     println!("manifest: {}", debug_manifest_path(&workspace).display());
     println!("chunks_dir: {}", debug_chunks_dir(&workspace).display());
+    println!("wrapped_file_key_nonce: {:?}", wrapped.nonce);
+    println!("wrapped_file_key_size: {} bytes", wrapped.data.len());
 
     if let Some(first) = encrypted.chunks.get(&0) {
         println!(
@@ -80,14 +120,14 @@ fn main() -> anyhow::Result<()> {
     }
     println!();
 
-    println!("== step 4: decrypt ==");
+    println!("== step 5: decrypt ==");
     let loaded = read_debug_workspace(&workspace)?;
-    let plaintext = decrypt_to_bytes(&loaded, &peer_key)?;
+    let plaintext = decrypt_to_bytes(&loaded, &peer_file_key)?;
     println!("loaded manifest and encrypted chunks from workspace");
     println!("decrypted bytes: {}", plaintext.len());
     println!();
 
-    println!("== step 5: reconstruct ==");
+    println!("== step 6: reconstruct ==");
     let output_path = workspace.join(format!("reconstructed-{}", file_name(&input)));
     fs::write(&output_path, plaintext)?;
     let output_hash = hash_file(&output_path)?;
@@ -110,6 +150,12 @@ fn main() -> anyhow::Result<()> {
     println!("└── reconstructed-{}", file_name(&input));
 
     Ok(())
+}
+
+fn example_psk() -> AuthPsk {
+    AuthPsk::from_passphrase(
+        std::env::var("ETLE_EXAMPLE_PSK").unwrap_or_else(|_| "etle-example-psk".to_string()),
+    )
 }
 
 fn prepare_workspace(workspace: &Path) -> anyhow::Result<()> {
