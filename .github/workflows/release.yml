@@ -258,9 +258,16 @@ jobs:
       - name: Build release GUI binary
         env:
           PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig
-          PATH: /ucrt64/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
+
+          cargo_home="$(cygpath -u "${CARGO_HOME:-${USERPROFILE}/.cargo}")"
+          export PATH="${cargo_home}/bin:/ucrt64/bin:${PATH}"
+
+          which cargo
+          cargo --version
+          pkg-config --modversion gtk4
+
           cargo build \
             --locked \
             --release \
