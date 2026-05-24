@@ -138,7 +138,11 @@ pub async fn serve_ipc_once(
     let (mut stream, _) = listener.accept().await?;
     let command: IpcCommand = receive_ipc_message(&mut stream).await?;
     if matches!(command, IpcCommand::SubscribeEvents) {
-        serve_ipc_event_subscription(&mut stream).await?;
+        tokio::spawn(async move {
+            if let Err(error) = serve_ipc_event_subscription(&mut stream).await {
+                eprintln!("[daemon] ipc event subscription closed: {error}");
+            }
+        });
         return Ok(false);
     }
 
@@ -158,7 +162,11 @@ async fn serve_ipc_once_named_pipe(
 
     let command: IpcCommand = receive_ipc_message(&mut stream).await?;
     if matches!(command, IpcCommand::SubscribeEvents) {
-        serve_ipc_event_subscription(&mut stream).await?;
+        tokio::spawn(async move {
+            if let Err(error) = serve_ipc_event_subscription(&mut stream).await {
+                eprintln!("[daemon] ipc event subscription closed: {error}");
+            }
+        });
         return Ok(false);
     }
 
