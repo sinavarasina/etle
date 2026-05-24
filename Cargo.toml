@@ -28,11 +28,13 @@ tokio = { version = "1", features = [
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 x25519-dalek = "2.0.1"
+relm4 = { version = "0.11", optional = true }
+rfd = { version = "0.15", optional = true }
 
 [features]
 default = ["cli"]
 cli = ["dep:clap"]
-gui-relm4 = []
+gui-relm4 = ["dep:relm4", "dep:rfd"]
 
 [[bin]]
 name = "etle-cli"
@@ -48,3 +50,9 @@ required-features = ["gui-relm4"]
 name = "etled"
 path = "src/bin/etled.rs"
 required-features = ["cli"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

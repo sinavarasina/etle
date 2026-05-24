@@ -24,29 +24,52 @@ where
 {
     let mut events = subscribe();
 
-    send_ipc_message(
+    if let Err(error) = send_ipc_message(
         stream,
         &IpcResponse::Ack {
             message: "event subscription started".to_string(),
         },
     )
-    .await?;
+    .await
+    {
+        if is_disconnected_client(&error) {
+            return Ok(());
+        }
+
+        return Err(error);
+    }
 
     loop {
-        match events.recv().await {
-            Ok(event) => send_ipc_message(stream, &event).await?,
-            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                send_ipc_message(
-                    stream,
-                    &IpcEvent::Error {
-                        message: format!("event subscriber lagged; skipped {skipped} event(s)"),
-                    },
-                )
-                .await?;
-            }
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(skipped)) => IpcEvent::Error {
+                message: format!("event subscriber lagged; skipped {skipped} event(s)"),
+            },
             Err(broadcast::error::RecvError::Closed) => break,
+        };
+
+        if let Err(error) = send_ipc_message(stream, &event).await {
+            if is_disconnected_client(&error) {
+                break;
+            }
+
+            return Err(error);
         }
     }
 
     Ok(())
+}
+
+pub(super) fn is_disconnected_client(error: &IpcError) -> bool {
+    match error {
+        IpcError::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
 }

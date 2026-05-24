@@ -1324,15 +1324,15 @@ fn decrypt_library_chunks_to_file_sequential(
     let mut output = BufWriter::with_capacity(RECONSTRUCT_WRITER_BUFFER_SIZE, output);
     let mut final_hasher = blake3::Hasher::new();
     let total_chunks = manifest.chunks.len();
-    let progress_context = manifest.file_id.to_string();
+    let share_id = paths.share_id;
 
     for (offset, meta) in manifest.chunks.iter().enumerate() {
         let decrypted = decrypt_library_chunk(paths, manifest.file_id, file_key, meta)?;
         let decrypted_len = decrypted.data.len();
         final_hasher.update(&decrypted.data);
         output.write_all(&decrypted.data)?;
-        super::progress::with_label(
-            &progress_context,
+        super::progress::for_share(
+            share_id,
             "peer",
             "decrypted+written",
             log_level,
@@ -1370,7 +1370,7 @@ fn decrypt_library_chunks_to_file_parallel(
         .iter()
         .map(|meta| meta.index)
         .collect::<Vec<_>>();
-    let progress_context = manifest.file_id.to_string();
+    let share_id = paths.share_id;
 
     thread::scope(|scope| {
         let mut handles = Vec::with_capacity(worker_count);
@@ -1417,8 +1417,8 @@ fn decrypt_library_chunks_to_file_parallel(
                         final_hasher.update(&data);
                         output.write_all(&data)?;
                         let done = next_position + 1;
-                        super::progress::with_label(
-                            &progress_context,
+                        super::progress::for_share(
+                            share_id,
                             "peer",
                             "decrypted+written",
                             log_level,

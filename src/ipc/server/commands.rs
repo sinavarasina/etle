@@ -192,11 +192,24 @@ fn queue_download_command(
                 chunks,
                 ..
             } => {
+                super::events::publish(IpcEvent::TaskProgress {
+                    job_id: Some(task_job_id.clone()),
+                    task: "peer:completed".to_string(),
+                    label: share_id.to_string(),
+                    completed_chunks: chunks,
+                    total_chunks: chunks,
+                    bytes_done: file_size,
+                    total_bytes: file_size,
+                    bytes_per_second: 0,
+                });
                 super::events::publish(IpcEvent::TransferCompleted {
                     job_id: Some(task_job_id.clone()),
                     share_id,
                     output: output.clone(),
                 });
+                if let Ok(Some(share)) = share_summary_by_id(&library_root, share_id) {
+                    super::events::publish(IpcEvent::ShareUpdated { share });
+                }
                 println!("[daemon] download job completed: {share_id}");
                 println!("[daemon] output: {}", output.display());
                 println!("[daemon] file: {file_name}");

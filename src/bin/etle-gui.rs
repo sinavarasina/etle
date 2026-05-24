@@ -1,3 +1,13 @@
+#[cfg(feature = "gui-relm4")]
+#[path = "../gui/mod.rs"]
+mod gui;
+
+#[cfg(feature = "gui-relm4")]
 fn main() {
-    println!("etle-gui placeholder: GUI implementation starts in Sprint 4");
+    gui::run();
+}
+
+#[cfg(not(feature = "gui-relm4"))]
+fn main() {
+    eprintln!("etle-gui requires `--features gui-relm4`");
 }

@@ -68,8 +68,7 @@ pub async fn once(
 
     let should_shutdown = matches!(command, IpcCommand::Shutdown);
     let response = super::commands::handle_async(command, library_root.as_ref()).await;
-    send_ipc_message(&mut stream, &response).await?;
-    Ok(should_shutdown)
+    send_response_or_ignore_closed_client(&mut stream, &response, should_shutdown).await
 }
 
 #[cfg(windows)]
@@ -89,7 +88,23 @@ async fn once_named_pipe(pipe_name: &Path, library_root: &Path) -> Result<bool, 
 
     let should_shutdown = matches!(command, IpcCommand::Shutdown);
     let response = super::commands::handle_async(command, library_root).await;
-    send_ipc_message(&mut stream, &response).await?;
+    send_response_or_ignore_closed_client(&mut stream, &response, should_shutdown).await
+}
 
-    Ok(should_shutdown)
+async fn send_response_or_ignore_closed_client<W>(
+    stream: &mut W,
+    response: &IpcResponse,
+    should_shutdown: bool,
+) -> Result<bool, IpcError>
+where
+    W: AsyncWrite + Unpin,
+{
+    match send_ipc_message(stream, response).await {
+        Ok(()) => Ok(should_shutdown),
+        Err(error) if super::events::is_disconnected_client(&error) => {
+            eprintln!("[daemon] ipc client disconnected before response was delivered");
+            Ok(should_shutdown)
+        }
+        Err(error) => Err(error),
+    }
 }

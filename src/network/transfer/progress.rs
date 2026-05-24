@@ -128,9 +128,22 @@ fn with_context_label(
     state.last_log = now;
 
     if let Some(share_id) = share_id {
-        events::publish(IpcEvent::TransferProgress {
-            job_id: super::jobs::active_job_id(share_id),
-            share_id,
+        let job_id = super::jobs::active_job_id(share_id);
+        if should_publish_legacy_transfer_progress(role, action) {
+            events::publish(IpcEvent::TransferProgress {
+                job_id: job_id.clone(),
+                share_id,
+                completed_chunks: done,
+                total_chunks: total,
+                bytes_done: state.bytes_done,
+                total_bytes,
+                bytes_per_second: average_rate as u64,
+            });
+        }
+        events::publish(IpcEvent::TaskProgress {
+            job_id,
+            task: format!("{role}:{action}"),
+            label: share_id.to_string(),
             completed_chunks: done,
             total_chunks: total,
             bytes_done: state.bytes_done,
@@ -155,6 +168,10 @@ fn with_context_label(
     }
 
     println!("{line}");
+}
+
+fn should_publish_legacy_transfer_progress(role: &str, action: &str) -> bool {
+    role == "peer" && (action.contains("received+verified") || action == "reused")
 }
 
 fn progress_states() -> &'static Mutex<BTreeMap<ProgressKey, ProgressState>> {
