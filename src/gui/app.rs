@@ -35,8 +35,9 @@ impl SimpleComponent for EtleGui {
     fn init_root() -> Self::Root {
         gtk::Window::builder()
             .title("ETLE")
-            .default_width(1040)
-            .default_height(680)
+            .default_width(760)
+            .default_height(820)
+            .resizable(true)
             .build()
     }
 
@@ -47,39 +48,54 @@ impl SimpleComponent for EtleGui {
     ) -> ComponentParts<Self> {
         let model = EtleGui::new(init);
 
+        let outer_scroll = gtk::ScrolledWindow::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .build();
+        window.set_child(Some(&outer_scroll));
+
         let root = gtk::Box::new(Orientation::Vertical, 8);
         root.set_margin_top(8);
         root.set_margin_bottom(8);
         root.set_margin_start(8);
         root.set_margin_end(8);
-        window.set_child(Some(&root));
+        outer_scroll.set_child(Some(&root));
 
-        let header = gtk::Box::new(Orientation::Horizontal, 6);
+        let header = gtk::Box::new(Orientation::Vertical, 6);
         root.append(&header);
+
+        let header_main = gtk::Box::new(Orientation::Horizontal, 6);
+        header.append(&header_main);
 
         let status_label = Label::new(None);
         status_label.set_xalign(0.0);
-        status_label.set_width_chars(20);
-        header.append(&status_label);
+        status_label.set_width_chars(14);
+        header_main.append(&status_label);
 
         let socket_entry = Entry::builder()
             .hexpand(true)
             .placeholder_text("IPC socket / pipe")
             .build();
         socket_entry.set_text(&model.socket_draft);
-        header.append(&socket_entry);
+        header_main.append(&socket_entry);
+
+        let header_actions = gtk::Box::new(Orientation::Horizontal, 6);
+        header_actions.set_halign(gtk::Align::End);
+        header.append(&header_actions);
 
         let apply_socket_button = Button::with_label("Apply");
-        header.append(&apply_socket_button);
+        header_actions.append(&apply_socket_button);
 
         let connect_button = Button::with_label("Ping");
-        header.append(&connect_button);
+        header_actions.append(&connect_button);
 
         let refresh_button = Button::with_label("Refresh");
-        header.append(&refresh_button);
+        header_actions.append(&refresh_button);
 
         let watch_button = Button::with_label("Watch");
-        header.append(&watch_button);
+        header_actions.append(&watch_button);
 
         let stack = Stack::builder()
             .hexpand(true)
@@ -1178,14 +1194,14 @@ impl EtleGui {
             .job_id
             .clone()
             .unwrap_or_else(|| format!("{}:{label}", kind.label()));
-        let completed =
-            progress.total_chunks > 0 && progress.completed_chunks >= progress.total_chunks;
-        let status =
-            if progress.task.contains("completed") || (kind == TransferKind::Seed && completed) {
-                TransferStatus::Done
-            } else {
-                TransferStatus::Running
-            };
+        let completed = progress.total_chunks > 0 && progress.completed_chunks >= progress.total_chunks;
+        let status = if progress.task.contains("completed")
+            || (kind == TransferKind::Seed && completed)
+        {
+            TransferStatus::Done
+        } else {
+            TransferStatus::Running
+        };
         let detail = friendly_task_detail(&progress.task);
         let seq = self.bump_seq();
         let transfer = GuiTransfer {
@@ -1422,3 +1438,5 @@ fn transfer_hidden_keys(transfer: &GuiTransfer) -> Vec<String> {
     }
     keys
 }
+
+

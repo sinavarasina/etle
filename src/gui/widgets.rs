@@ -5,7 +5,7 @@ use relm4::{
     ComponentSender,
     gtk::{
         self, Button, CheckButton, Entry, Frame, Label, ListBox, ListBoxRow, Orientation,
-        PasswordEntry, ProgressBar, ScrolledWindow, Separator, SpinButton, TextBuffer, TextView,
+        PasswordEntry, ProgressBar, ScrolledWindow, SpinButton, TextBuffer, TextView,
         glib::prelude::IsA, prelude::*,
     },
 };
@@ -73,14 +73,14 @@ pub fn build_library_page(
     actions.append(&clear_finished_button);
     page.append(&actions);
 
-    let body = gtk::Box::new(Orientation::Horizontal, 8);
+    let body = gtk::Box::new(Orientation::Vertical, 8);
     page.append(&body);
 
     let list_scroll = ScrolledWindow::builder()
         .child(library_list)
         .hexpand(true)
         .vexpand(true)
-        .min_content_width(460)
+        .min_content_height(240)
         .build();
     body.append(&section("Shares", &list_scroll));
 
@@ -95,7 +95,7 @@ pub fn build_library_page(
         .child(&detail_view)
         .hexpand(true)
         .vexpand(true)
-        .min_content_width(360)
+        .min_content_height(180)
         .build();
     body.append(&section("Details", &detail_scroll));
 
@@ -129,16 +129,20 @@ pub fn build_seed_page(
     file_row.append(&browse_button);
     input_box.append(&file_row);
 
-    let options = gtk::Box::new(Orientation::Horizontal, 6);
-    options.append(&Label::new(Some("chunk")));
-    options.append(seed_chunk_spin);
-    options.append(&Separator::new(Orientation::Vertical));
+    let options = gtk::Box::new(Orientation::Vertical, 6);
+    let chunk_row = gtk::Box::new(Orientation::Horizontal, 6);
+    chunk_row.append(&Label::new(Some("chunk")));
+    chunk_row.append(seed_chunk_spin);
+    options.append(&chunk_row);
+
+    let action_row = gtk::Box::new(Orientation::Horizontal, 6);
     let seed_selected_button = Button::with_label("Seed selected");
     let remove_button = Button::with_label("Remove");
     let clear_button = Button::with_label("Clear list");
-    options.append(&seed_selected_button);
-    options.append(&remove_button);
-    options.append(&clear_button);
+    action_row.append(&seed_selected_button);
+    action_row.append(&remove_button);
+    action_row.append(&clear_button);
+    options.append(&action_row);
     input_box.append(&options);
     page.append(&section("Seed queue", &input_box));
 
@@ -146,7 +150,7 @@ pub fn build_seed_page(
         .child(seed_list)
         .vexpand(true)
         .hexpand(true)
-        .min_content_height(360)
+        .min_content_height(240)
         .build();
     page.append(&section("Files", &list_scroll));
 
@@ -219,22 +223,13 @@ pub fn build_download_page(
     output_row.append(&output_button);
     form.append(&output_row);
 
-    let grid = gtk::Grid::builder()
-        .column_spacing(8)
-        .row_spacing(6)
-        .hexpand(true)
-        .build();
-    grid.attach(&Label::new(Some("parallel")), 0, 0, 1, 1);
-    grid.attach(parallel_spin, 1, 0, 1, 1);
-    grid.attach(&Label::new(Some("window")), 2, 0, 1, 1);
-    grid.attach(request_window_spin, 3, 0, 1, 1);
-    grid.attach(&Label::new(Some("discovery port")), 0, 1, 1, 1);
-    grid.attach(discovery_port_spin, 1, 1, 1, 1);
-    grid.attach(&Label::new(Some("timeout ms")), 2, 1, 1, 1);
-    grid.attach(discovery_timeout_spin, 3, 1, 1, 1);
-    grid.attach(&Label::new(Some("multicast")), 0, 2, 1, 1);
-    grid.attach(discovery_multicast_entry, 1, 2, 3, 1);
-    form.append(&grid);
+    let advanced = gtk::Box::new(Orientation::Vertical, 6);
+    advanced.append(&labeled_row("parallel", parallel_spin));
+    advanced.append(&labeled_row("window", request_window_spin));
+    advanced.append(&labeled_row("disc. port", discovery_port_spin));
+    advanced.append(&labeled_row("timeout ms", discovery_timeout_spin));
+    advanced.append(&labeled_row("multicast", discovery_multicast_entry));
+    form.append(&advanced);
 
     form.append(&labeled_row("auth psk", psk_entry));
     form.append(resume_check);
@@ -314,7 +309,7 @@ pub fn build_activity_page(
         .child(transfer_list)
         .vexpand(true)
         .hexpand(true)
-        .min_content_height(260)
+        .min_content_height(220)
         .build();
     page.append(&section("Transfers", &transfer_scroll));
 
@@ -340,7 +335,7 @@ pub fn build_activity_page(
         .child(&activity_view)
         .vexpand(true)
         .hexpand(true)
-        .min_content_height(160)
+        .min_content_height(180)
         .build();
     log_box.append(&scroll);
     page.append(&section("Activity log", &log_box));
@@ -383,29 +378,27 @@ pub fn build_settings_page(
 
     box_.append(&labeled_row("default psk", psk_entry));
 
-    let grid = gtk::Grid::builder()
-        .column_spacing(8)
-        .row_spacing(6)
-        .hexpand(true)
-        .build();
-    grid.attach(&Label::new(Some("refresh s")), 0, 0, 1, 1);
-    grid.attach(refresh_interval_spin, 1, 0, 1, 1);
-    grid.attach(&Label::new(Some("log lines")), 2, 0, 1, 1);
-    grid.attach(activity_limit_spin, 3, 0, 1, 1);
-    box_.append(&grid);
+    let limits = gtk::Box::new(Orientation::Vertical, 6);
+    limits.append(&labeled_row("refresh s", refresh_interval_spin));
+    limits.append(&labeled_row("log lines", activity_limit_spin));
+    box_.append(&limits);
 
     box_.append(auto_refresh_check);
     box_.append(clear_activity_check);
 
-    let actions = gtk::Box::new(Orientation::Horizontal, 6);
+    let actions = gtk::Box::new(Orientation::Vertical, 6);
+    let action_row_a = gtk::Box::new(Orientation::Horizontal, 6);
+    let action_row_b = gtk::Box::new(Orientation::Horizontal, 6);
     let ping_button = Button::with_label("Ping");
     let refresh_button = Button::with_label("Refresh now");
     let watch_button = Button::with_label("Watch events");
     let apply_settings_button = Button::with_label("Apply settings");
-    actions.append(&ping_button);
-    actions.append(&refresh_button);
-    actions.append(&watch_button);
-    actions.append(&apply_settings_button);
+    action_row_a.append(&ping_button);
+    action_row_a.append(&refresh_button);
+    action_row_b.append(&watch_button);
+    action_row_b.append(&apply_settings_button);
+    actions.append(&action_row_a);
+    actions.append(&action_row_b);
     box_.append(&actions);
     page.append(&section("Daemon and UI", &box_));
 
@@ -458,9 +451,10 @@ where
 {
     let row = gtk::Box::new(Orientation::Horizontal, 6);
     let label = Label::new(Some(label));
-    label.set_width_chars(12);
+    label.set_width_chars(10);
     label.set_xalign(0.0);
     row.append(&label);
+    widget.set_hexpand(true);
     row.append(widget);
     row
 }
@@ -710,3 +704,5 @@ fn share_percent(share: &IpcShareSummary) -> f64 {
 fn _debug_bytes(bytes: u64) -> String {
     human_bytes(bytes)
 }
+
+

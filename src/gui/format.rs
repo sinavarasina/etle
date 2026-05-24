@@ -62,3 +62,4 @@ pub fn short_time() -> String {
     let second = secs % 60;
     format!("{hour:02}:{minute:02}:{second:02}")
 }
+
