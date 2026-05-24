@@ -34,8 +34,8 @@ struct Cli {
 enum Command {
     /// Serve any local library share requested by peers over one P2P port.
     Serve {
-        /// TCP listen address for the P2P transfer server.
-        #[arg(long, default_value = "0.0.0.0:7000")]
+        /// TCP listen address for the P2P transfer server. Defaults to 0.0.0.0:7000 so LAN peers can connect.
+        #[arg(long, default_value = "0.0.0.0:7000", value_name = "ADDR:PORT")]
         listen: SocketAddr,
 
         /// Local peer identifier sent during hello handshake.
@@ -55,11 +55,11 @@ enum Command {
         no_ipc: bool,
 
         /// UDP port used for LAN peer discovery.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT)]
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT, value_name = "PORT")]
         discovery_port: u16,
 
         /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR)]
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR, value_name = "IPv4")]
         discovery_multicast: Ipv4Addr,
 
         /// Disable LAN peer discovery.

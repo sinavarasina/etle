@@ -80,24 +80,24 @@ enum Command {
         #[arg(long)]
         no_resume: bool,
 
-        /// Number of parallel peer workers for multi-peer download. Use 0/auto to match the number of resolved peers.
-        #[arg(long, default_value_t = 0)]
+        /// Parallel peer workers: 0=auto by resolved peer count, 1=sequential fallback, N=parallel workers.
+        #[arg(long, default_value_t = 0, value_name = "N")]
         parallel: usize,
 
         /// Number of chunk requests kept in flight per peer connection.
-        #[arg(long, default_value_t = 16)]
+        #[arg(long, default_value_t = 16, value_name = "CHUNKS")]
         request_window: usize,
 
         /// UDP port used for LAN peer discovery when --peer is omitted.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT)]
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_PORT, value_name = "PORT")]
         discovery_port: u16,
 
         /// LAN discovery timeout in milliseconds when --peer is omitted.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_TIMEOUT_MS)]
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_TIMEOUT_MS, value_name = "MS")]
         discovery_timeout_ms: u64,
 
         /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
-        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR)]
+        #[arg(long, default_value_t = DEFAULT_DISCOVERY_MULTICAST_ADDR, value_name = "IPv4")]
         discovery_multicast: Ipv4Addr,
     },
 
