@@ -1,6 +1,8 @@
 use super::prelude::*;
 use super::wire::{DiscoveryInterface, DiscoveryMessage};
 
+use crate::state::{model::ShareMode, paths::LocalShareSummary};
+
 pub(super) fn advertised_p2p_addr(p2p_listen: SocketAddr, _source_ip: IpAddr) -> SocketAddr {
     // Keep 0.0.0.0/:: unspecified in the discovery response.
     //
@@ -110,12 +112,32 @@ pub(super) fn local_share_name(library_root: &Path, share_id: ShareId) -> Option
     let shares = library::list(library_root).ok()?;
     shares
         .into_iter()
-        .find(|share| {
-            share.descriptor.share_id == share_id
-                && share.has_secret
-                && share.completed_chunks() > 0
-        })
+        .find(|share| share.descriptor.share_id == share_id && is_discoverable_share(share))
         .map(|share| share.descriptor.name)
+}
+
+fn is_discoverable_share(share: &LocalShareSummary) -> bool {
+    if !share.has_secret {
+        return false;
+    }
+
+    if !matches!(
+        share.mode(),
+        Some(ShareMode::Seeding | ShareMode::Completed)
+    ) {
+        return false;
+    }
+
+    let total_chunks = share.total_chunks();
+    if total_chunks == 0 || share.completed_chunks() != total_chunks {
+        return false;
+    }
+
+    share
+        .descriptor
+        .chunks
+        .iter()
+        .all(|chunk| share.paths.chunk_path(chunk.index).is_file())
 }
 
 pub(super) fn encode_message(message: &DiscoveryMessage) -> std::io::Result<Vec<u8>> {
