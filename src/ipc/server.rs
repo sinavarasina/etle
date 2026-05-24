@@ -441,15 +441,28 @@ async fn handle_download_command(
         peers
     };
 
+    let effective_parallelism = effective_download_parallelism(parallelism, peers.len());
+    if parallelism == 0 && effective_parallelism > 1 {
+        println!(
+            "[daemon] auto parallelism: {effective_parallelism} worker(s) for {} peer(s)",
+            peers.len()
+        );
+    }
+
     let options = DownloadFileOptions::new("etle-daemon", TransferLogLevel::Normal)
         .with_library_root(library_root.to_path_buf())
         .with_resume(resume)
         .with_requested_share_id(Some(share_id))
         .with_request_window(request_window);
 
-    let result = if parallelism > 1 {
-        download_file_from_peers_parallel_with_options(peers, &output_path, options, parallelism)
-            .await
+    let result = if effective_parallelism > 1 {
+        download_file_from_peers_parallel_with_options(
+            peers,
+            &output_path,
+            options,
+            effective_parallelism,
+        )
+        .await
     } else {
         download_file_from_peers_with_options(peers, &output_path, options).await
     };
@@ -477,6 +490,15 @@ async fn handle_download_command(
     };
 
     transfer_completed_response(share_id, final_output, &manifest)
+}
+
+#[must_use]
+fn effective_download_parallelism(requested_parallelism: usize, peer_count: usize) -> usize {
+    if requested_parallelism == 0 {
+        peer_count.max(1)
+    } else {
+        requested_parallelism
+    }
 }
 
 fn list_shares_response(library_root: &Path) -> IpcResponse {

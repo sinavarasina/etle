@@ -80,8 +80,8 @@ enum Command {
         #[arg(long)]
         no_resume: bool,
 
-        /// Number of parallel peer workers for multi-peer download.
-        #[arg(long, default_value_t = 1)]
+        /// Number of parallel peer workers for multi-peer download. Use 0/auto to match the number of resolved peers.
+        #[arg(long, default_value_t = 0)]
         parallel: usize,
 
         /// Number of chunk requests kept in flight per peer connection.
