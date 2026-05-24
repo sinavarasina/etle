@@ -6,26 +6,37 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
     inputs:
-      tag:
-        description: Existing git tag to release, for example v0.1.0
-        required: true
+      ref:
+        description: Branch, tag, or commit SHA to build. Leave empty to build the selected branch.
+        required: false
+        default: ''
+        type: string
+      publish:
+        description: Publish/upload to GitHub Releases. Disable this for dry-run build tests.
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: Release tag to publish to, for example v0.1.0. Required only when publish=true from workflow_dispatch.
+        required: false
+        default: ''
         type: string
       draft:
         description: Create the GitHub Release as draft
         required: false
-        default: false
+        default: true
         type: boolean
       prerelease:
         description: Mark the GitHub Release as prerelease
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag }}
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.ref }}-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 env:
@@ -46,10 +57,10 @@ jobs:
           - windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -74,9 +85,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
+            version="${{ inputs.release_tag }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dryrun-${GITHUB_SHA::7}"
+          fi
+
           host="$(rustc -vV | sed -n 's/^host: //p')"
-          asset="etle-${tag}-${host}-cli"
+          asset="etle-${version}-${host}-cli"
           exe=""
           archive="${asset}.tar.gz"
 
@@ -119,10 +137,10 @@ jobs:
           - macos-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
 
       - name: Install GTK4 build dependencies on Linux
         if: runner.os == 'Linux'
@@ -157,9 +175,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
+            version="${{ inputs.release_tag }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dryrun-${GITHUB_SHA::7}"
+          fi
+
           host="$(rustc -vV | sed -n 's/^host: //p')"
-          asset="etle-${tag}-${host}-gui"
+          asset="etle-${version}-${host}-gui"
           archive="${asset}.tar.gz"
 
           mkdir -p "dist/${asset}"
@@ -196,10 +221,10 @@ jobs:
         shell: msys2 {0}
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -250,16 +275,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          asset="etle-${tag}-x86_64-pc-windows-gnu-gui"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
+            version="${{ inputs.release_tag }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="dryrun-${GITHUB_SHA::7}"
+          fi
+
+          asset="etle-${version}-x86_64-pc-windows-gnu-gui"
           exe_path="target/x86_64-pc-windows-gnu/release/etle-gui.exe"
 
           mkdir -p "dist/${asset}"
           cp "${exe_path}" "dist/${asset}/"
 
-          # Copy DLL dependencies reported by ldd from the MSYS2 UCRT64 runtime.
-          # This catches GTK, GLib, Pango, Cairo, Harfbuzz, Fontconfig, Freetype,
-          # image libraries, and MinGW/UCRT support DLLs used by etle-gui.exe.
           ldd "${exe_path}" \
             | awk '
                 {
@@ -275,7 +304,6 @@ jobs:
                 cp -v "${dll}" "dist/${asset}/"
               done
 
-          # Runtime data/plugins commonly needed by GTK/GIO/GDK-Pixbuf/Fontconfig.
           mkdir -p "dist/${asset}/share/glib-2.0" "dist/${asset}/share/icons" "dist/${asset}/share" "dist/${asset}/lib" "dist/${asset}/etc"
 
           cp -a /ucrt64/share/glib-2.0/schemas "dist/${asset}/share/glib-2.0/" || true
@@ -316,6 +344,7 @@ jobs:
 
   publish:
     name: publish GitHub Release
+    if: github.event_name == 'push' || inputs.publish
     needs:
       - build-cli
       - build-gui-linux-macos
@@ -324,6 +353,16 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - name: Validate release tag input
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${{ inputs.release_tag }}" ]]; then
+            echo "release_tag is required when publish=true from workflow_dispatch" >&2
+            exit 1
+          fi
+
       - name: Download packaged artifacts
         uses: actions/download-artifact@v4
         with:
@@ -334,7 +373,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           RELEASE_DRAFT: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
           RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
         run: |
@@ -347,7 +386,7 @@ jobs:
             exit 1
           fi
 
-          args=(--verify-tag --generate-notes --title "${RELEASE_TAG}")
+          args=(--generate-notes --title "${RELEASE_TAG}")
           if [[ "${RELEASE_DRAFT}" == "true" ]]; then args+=(--draft); fi
           if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then args+=(--prerelease); fi
 
