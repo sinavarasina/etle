@@ -415,11 +415,11 @@ impl SimpleComponent for EtleGui {
                 }
             }
             AppInput::CopySelectedShareId => {
-                if let Some(share) = self.selected_share_summary() {
-                    if let Some(display) = gdk::Display::default() {
-                        display.clipboard().set_text(&share.share_id.to_string());
-                        self.push_log("share id copied");
-                    }
+                if let Some(share) = self.selected_share_summary()
+                    && let Some(display) = gdk::Display::default()
+                {
+                    display.clipboard().set_text(&share.share_id.to_string());
+                    self.push_log("share id copied");
                 }
             }
             AppInput::ClearLog => {
