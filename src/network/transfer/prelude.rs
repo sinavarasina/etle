@@ -15,7 +15,7 @@ pub(super) use crate::{
     crypto::{
         aead::{SymmetricKey, build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce},
         hash::{FileId, hash_chunk, hash_file},
-        key_exchange::derive_session_key,
+        key_exchange::AuthPsk,
         key_wrap::{WrappedFileKey, generate_file_key, unwrap_file_key, wrap_file_key},
     },
     file::{
@@ -28,7 +28,10 @@ pub(super) use crate::{
     network::{
         error::NetworkError,
         handshake::{client_protocol_handshake, server_protocol_handshake},
-        key_exchange::{client_shared_secret_exchange, server_shared_secret_exchange},
+        key_exchange::{
+            client_authenticated_session_key_exchange, client_session_key_exchange,
+            server_authenticated_session_key_exchange, server_session_key_exchange,
+        },
         tcp::{accept_peer, connect_peer},
     },
     protocol::{

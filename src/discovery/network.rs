@@ -124,7 +124,15 @@ pub(super) fn encode_message(message: &DiscoveryMessage) -> std::io::Result<Vec<
 pub(super) fn decode_message(
     bytes: &[u8],
 ) -> Result<DiscoveryMessage, bincode::error::DecodeError> {
-    let (message, _read): (DiscoveryMessage, usize) =
+    let (message, bytes_read): (DiscoveryMessage, usize) =
         bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+    if bytes_read != bytes.len() {
+        return Err(bincode::error::DecodeError::OtherString(format!(
+            "discovery message has trailing bytes: decoded {bytes_read} of {} bytes",
+            bytes.len()
+        )));
+    }
+
     Ok(message)
 }

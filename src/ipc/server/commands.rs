@@ -43,6 +43,7 @@ pub async fn handle_async(command: IpcCommand, library_root: &Path) -> IpcRespon
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
+            auth_psk,
         } => queue_download_command(
             share_id,
             peers,
@@ -52,6 +53,7 @@ pub async fn handle_async(command: IpcCommand, library_root: &Path) -> IpcRespon
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
+            auth_psk,
             true,
             library_root,
         ),
@@ -64,6 +66,7 @@ pub async fn handle_async(command: IpcCommand, library_root: &Path) -> IpcRespon
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
+            auth_psk,
         } => queue_download_command(
             share_id,
             peers,
@@ -73,6 +76,7 @@ pub async fn handle_async(command: IpcCommand, library_root: &Path) -> IpcRespon
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
+            auth_psk,
             false,
             library_root,
         ),
@@ -156,6 +160,7 @@ fn queue_download_command(
     discovery_port: u16,
     discovery_timeout_ms: u64,
     discovery_multicast: Ipv4Addr,
+    auth_psk: Option<String>,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -174,6 +179,7 @@ fn queue_download_command(
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
+            auth_psk,
             resume,
             &library_root,
         )
@@ -222,6 +228,7 @@ async fn handle_download_command(
     discovery_port: u16,
     discovery_timeout_ms: u64,
     discovery_multicast: Ipv4Addr,
+    auth_psk: Option<String>,
     resume: bool,
     library_root: &Path,
 ) -> IpcResponse {
@@ -272,11 +279,16 @@ async fn handle_download_command(
         );
     }
 
-    let options = DownloadFileOptions::new("etle-daemon", TransferLogLevel::Normal)
+    let mut options = DownloadFileOptions::new("etle-daemon", TransferLogLevel::Normal)
         .with_library_root(library_root.to_path_buf())
         .with_resume(resume)
         .with_requested_share_id(Some(share_id))
         .with_request_window(request_window);
+    if let Some(auth_psk) = auth_psk {
+        options = options.with_auth_psk(crate::crypto::key_exchange::AuthPsk::from_passphrase(
+            auth_psk,
+        ));
+    }
 
     let result = if effective_parallelism > 1 {
         download::from_peers_parallel(peers, &output_path, options, effective_parallelism).await

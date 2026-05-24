@@ -29,8 +29,15 @@ impl Manifest {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
-        let (manifest, _bytes_read): (Self, usize) =
+        let (manifest, bytes_read): (Self, usize) =
             bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+        if bytes_read != bytes.len() {
+            return Err(bincode::error::DecodeError::OtherString(format!(
+                "manifest has trailing bytes: decoded {bytes_read} of {} bytes",
+                bytes.len()
+            )));
+        }
 
         Ok(manifest)
     }

@@ -1,5 +1,15 @@
 use super::prelude::*;
 
+async fn client_transfer_session_key_exchange(
+    stream: &mut TcpStream,
+    auth_psk: Option<&AuthPsk>,
+) -> Result<SymmetricKey, NetworkError> {
+    match auth_psk {
+        Some(psk) => client_authenticated_session_key_exchange(stream, psk).await,
+        None => client_session_key_exchange(stream).await,
+    }
+}
+
 pub async fn from_peer(
     peer_addr: SocketAddr,
     output_path: impl AsRef<Path>,
@@ -92,6 +102,7 @@ pub async fn from_peers_parallel(
             options.peer_id.clone(),
             options.log_level,
             options.requested_share_id,
+            options.auth_psk.as_ref(),
         )
         .await
         {
@@ -320,6 +331,7 @@ pub async fn from_peer_with(
         resume,
         requested_share_id,
         request_window,
+        auth_psk,
     } = options;
     let output_path = output_path.as_ref();
     let mut stream = connect_peer(peer_addr).await?;
@@ -333,7 +345,7 @@ pub async fn from_peer_with(
         println!("[peer] hello handshake completed with {remote_peer_id}");
     }
 
-    let shared_secret = client_shared_secret_exchange(&mut stream).await?;
+    let session_key = client_transfer_session_key_exchange(&mut stream, auth_psk.as_ref()).await?;
     if log_level.is_normal() {
         println!("[peer] key exchange completed");
     }
@@ -364,7 +376,6 @@ pub async fn from_peer_with(
         println!("[peer] output path: {}", output_path.display());
     }
 
-    let session_key = derive_session_key(shared_secret);
     let wrapped_file_key = match receive(&mut stream).await? {
         WireMessage::WrappedFileKey { nonce, data } => WrappedFileKey { nonce, data },
         actual => {
@@ -517,6 +528,7 @@ async fn connect_download_peer(
     peer_id: String,
     log_level: TransferLogLevel,
     requested_share_id: Option<ShareId>,
+    auth_psk: Option<&AuthPsk>,
 ) -> Result<ConnectedDownloadPeer, NetworkError> {
     let mut stream = connect_peer(peer_addr).await?;
 
@@ -529,7 +541,7 @@ async fn connect_download_peer(
         println!("[peer] hello handshake completed with {remote_peer_id}");
     }
 
-    let shared_secret = client_shared_secret_exchange(&mut stream).await?;
+    let session_key = client_transfer_session_key_exchange(&mut stream, auth_psk).await?;
     if log_level.is_normal() {
         println!("[peer] key exchange completed");
     }
@@ -555,7 +567,6 @@ async fn connect_download_peer(
         );
     }
 
-    let session_key = derive_session_key(shared_secret);
     let wrapped_file_key = match receive(&mut stream).await? {
         WireMessage::WrappedFileKey { nonce, data } => WrappedFileKey { nonce, data },
         actual => {
@@ -1290,15 +1301,14 @@ fn decrypt_library_chunks_to_file(
         );
     }
 
-    let _ = decrypt_library_chunks_to_file_parallel(
+    decrypt_library_chunks_to_file_parallel(
         paths,
         manifest,
         file_key,
         output_path,
         worker_count,
         log_level,
-    );
-    Ok(())
+    )
 }
 
 fn decrypt_library_chunks_to_file_sequential(
@@ -1355,6 +1365,11 @@ fn decrypt_library_chunks_to_file_parallel(
     let file_id = manifest.file_id;
     let file_key = *file_key;
     let total_chunks = manifest.chunks.len();
+    let expected_order = manifest
+        .chunks
+        .iter()
+        .map(|meta| meta.index)
+        .collect::<Vec<_>>();
     let progress_context = manifest.file_id.to_string();
 
     thread::scope(|scope| {
@@ -1383,7 +1398,7 @@ fn decrypt_library_chunks_to_file_parallel(
 
         drop(tx);
 
-        let mut next_index = 0_u32;
+        let mut next_position = 0_usize;
         let mut pending = BTreeMap::<u32, Vec<u8>>::new();
         let mut first_error = None;
 
@@ -1392,11 +1407,16 @@ fn decrypt_library_chunks_to_file_parallel(
                 Ok(Ok(decrypted)) if first_error.is_none() => {
                     pending.insert(decrypted.index, decrypted.data);
 
-                    while let Some(data) = pending.remove(&next_index) {
+                    while next_position < expected_order.len() {
+                        let expected_index = expected_order[next_position];
+                        let Some(data) = pending.remove(&expected_index) else {
+                            break;
+                        };
+
                         let bytes = data.len();
                         final_hasher.update(&data);
                         output.write_all(&data)?;
-                        let done = (next_index as usize).saturating_add(1);
+                        let done = next_position + 1;
                         super::progress::with_label(
                             &progress_context,
                             "peer",
@@ -1404,10 +1424,10 @@ fn decrypt_library_chunks_to_file_parallel(
                             log_level,
                             done,
                             total_chunks,
-                            next_index,
+                            expected_index,
                             bytes,
                         );
-                        next_index = next_index.saturating_add(1);
+                        next_position += 1;
                     }
                 }
                 Ok(Ok(_)) => {}
@@ -1461,6 +1481,15 @@ fn decrypt_library_chunk(
 
     let aad = build_chunk_aad(file_id, meta.index, meta.plain_size);
     let data = decrypt_chunk(file_key, meta.nonce, &chunk.data, &aad)?;
+
+    if data.len() as u64 != meta.plain_size {
+        return Err(FileError::ChunkSizeMismatch {
+            index: meta.index,
+            expected: meta.plain_size,
+            actual: data.len() as u64,
+        }
+        .into());
+    }
 
     Ok(DecryptedChunk {
         index: meta.index,

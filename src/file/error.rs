@@ -19,6 +19,12 @@ pub enum FileError {
     #[error("invalid chunk size: {0}")]
     InvalidChunkSize(usize),
 
+    #[error("too many chunks for u32 chunk index space")]
+    TooManyChunks,
+
+    #[error("package is too large to represent safely")]
+    PackageTooLarge,
+
     #[error("missing encrypted chunk with index {0}")]
     MissingChunk(u32),
 

@@ -52,6 +52,7 @@ pub(super) fn parse(source: &str) -> Result<EtleConfig, ConfigError> {
             }
             "request_window" => config.request_window = Some(parse_value(line_number, key, value)?),
             "parallel" => config.parallel = Some(parse_value(line_number, key, value)?),
+            "auth_psk" => config.auth_psk = Some(parse_string_value(value)),
             _ => {
                 return Err(ConfigError::UnknownKey {
                     line: line_number,

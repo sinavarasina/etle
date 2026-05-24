@@ -1,5 +1,15 @@
 use super::prelude::*;
 
+async fn server_transfer_session_key_exchange(
+    stream: &mut TcpStream,
+    auth_psk: Option<&AuthPsk>,
+) -> Result<SymmetricKey, NetworkError> {
+    match auth_psk {
+        Some(psk) => server_authenticated_session_key_exchange(stream, psk).await,
+        None => server_session_key_exchange(stream).await,
+    }
+}
+
 pub async fn file_once(
     listener: TcpListener,
     input_path: impl AsRef<Path>,
@@ -25,6 +35,7 @@ pub async fn file_once_with(
         seeder_id,
         log_level,
         library_root,
+        auth_psk,
     } = options;
     let input_path = input_path.as_ref().to_path_buf();
     let (library_root, _temporary_root) = match library_root {
@@ -43,8 +54,11 @@ pub async fn file_once_with(
     }
 
     let descriptor = super::seed::add(&input_path, chunk_size, &library_root, log_level)?;
-    let options =
+    let mut options =
         ServeFileOptions::new(seeder_id, log_level).with_library_root(library_root.clone());
+    if let Some(auth_psk) = auth_psk {
+        options = options.with_auth_psk(auth_psk);
+    }
 
     share_once_from_listener(&listener, &library_root, descriptor.share_id, options)
         .await
@@ -153,6 +167,7 @@ async fn library_connected_peer(
         seeder_id,
         log_level,
         library_root: _,
+        auth_psk,
     } = options;
     let library_root = library_root.as_path();
 
@@ -165,8 +180,7 @@ async fn library_connected_peer(
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
 
-    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
-    let session_key = derive_session_key(shared_secret);
+    let session_key = server_transfer_session_key_exchange(&mut stream, auth_psk.as_ref()).await?;
     if log_level.is_normal() {
         println!("[seeder] key exchange completed");
     }
@@ -336,6 +350,7 @@ async fn share_connected_peer(
         seeder_id,
         log_level,
         library_root: _,
+        auth_psk,
     } = options;
     let paths = LibraryPaths::for_share(&library_root, share_id);
     let descriptor = read_descriptor(&paths)?;
@@ -358,8 +373,7 @@ async fn share_connected_peer(
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
 
-    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
-    let session_key = derive_session_key(shared_secret);
+    let session_key = server_transfer_session_key_exchange(&mut stream, auth_psk.as_ref()).await?;
     if log_level.is_normal() {
         println!("[seeder] key exchange completed");
     }
@@ -485,6 +499,7 @@ pub async fn library_once_from_listener(
         seeder_id,
         log_level,
         library_root: _,
+        auth_psk,
     } = options;
     let library_root = library_root.as_ref();
 
@@ -498,8 +513,7 @@ pub async fn library_once_from_listener(
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
 
-    let shared_secret = server_shared_secret_exchange(&mut stream).await?;
-    let session_key = derive_session_key(shared_secret);
+    let session_key = server_transfer_session_key_exchange(&mut stream, auth_psk.as_ref()).await?;
     if log_level.is_normal() {
         println!("[seeder] key exchange completed");
     }

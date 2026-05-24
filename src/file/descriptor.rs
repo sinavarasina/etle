@@ -80,8 +80,8 @@ pub struct FileEntry {
 
 impl FileEntry {
     #[must_use]
-    pub const fn end_offset(&self) -> u64 {
-        self.offset + self.size
+    pub const fn end_offset(&self) -> Option<u64> {
+        self.offset.checked_add(self.size)
     }
 }
 
@@ -135,8 +135,15 @@ impl EtleDescriptor {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
-        let (descriptor, _bytes_read): (Self, usize) =
+        let (descriptor, bytes_read): (Self, usize) =
             bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+        if bytes_read != bytes.len() {
+            return Err(bincode::error::DecodeError::OtherString(format!(
+                "descriptor has trailing bytes: decoded {bytes_read} of {} bytes",
+                bytes.len()
+            )));
+        }
 
         Ok(descriptor)
     }

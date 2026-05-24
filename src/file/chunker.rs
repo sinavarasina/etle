@@ -35,7 +35,7 @@ pub fn read_file_chunks(
             index,
             data: buffer,
         });
-        index = index.saturating_add(1);
+        index = index.checked_add(1).ok_or(FileError::TooManyChunks)?;
     }
 
     Ok(chunks)

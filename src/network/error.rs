@@ -26,6 +26,9 @@ pub enum NetworkError {
         actual: WireMessage,
     },
 
+    #[error("peer authentication failed")]
+    PeerAuthenticationFailed,
+
     #[error("missing encrypted chunk with index {0}")]
     MissingEncryptedChunk(u32),
 

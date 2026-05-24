@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::file::descriptor::ShareId;
+use crate::{crypto::key_exchange::AuthPsk, file::descriptor::ShareId};
 
 pub(super) const DEFAULT_REQUEST_WINDOW: usize = 16;
 
@@ -29,6 +29,7 @@ pub struct ServeFileOptions {
     pub seeder_id: String,
     pub log_level: TransferLogLevel,
     pub library_root: Option<PathBuf>,
+    pub auth_psk: Option<AuthPsk>,
 }
 
 impl ServeFileOptions {
@@ -38,12 +39,19 @@ impl ServeFileOptions {
             seeder_id: seeder_id.into(),
             log_level,
             library_root: None,
+            auth_psk: None,
         }
     }
 
     #[must_use]
     pub fn with_library_root(mut self, library_root: impl Into<PathBuf>) -> Self {
         self.library_root = Some(library_root.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_auth_psk(mut self, auth_psk: AuthPsk) -> Self {
+        self.auth_psk = Some(auth_psk);
         self
     }
 }
@@ -56,6 +64,7 @@ pub struct DownloadFileOptions {
     pub resume: bool,
     pub requested_share_id: Option<ShareId>,
     pub request_window: usize,
+    pub auth_psk: Option<AuthPsk>,
 }
 
 impl DownloadFileOptions {
@@ -68,6 +77,7 @@ impl DownloadFileOptions {
             resume: true,
             requested_share_id: None,
             request_window: DEFAULT_REQUEST_WINDOW,
+            auth_psk: None,
         }
     }
 
@@ -92,6 +102,12 @@ impl DownloadFileOptions {
     #[must_use]
     pub const fn with_request_window(mut self, request_window: usize) -> Self {
         self.request_window = request_window;
+        self
+    }
+
+    #[must_use]
+    pub fn with_auth_psk(mut self, auth_psk: AuthPsk) -> Self {
+        self.auth_psk = Some(auth_psk);
         self
     }
 }

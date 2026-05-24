@@ -1,3 +1,5 @@
+use serde::de::DeserializeOwned;
+
 use super::model::{DownloadProgress, ShareMode, ShareState};
 use super::prelude::*;
 
@@ -71,28 +73,37 @@ pub(super) fn decode_progress(
     bytes: &[u8],
 ) -> Result<DownloadProgress, bincode::error::DecodeError> {
     if let Some(payload) = bytes.strip_prefix(COMPACT_PROGRESS_MAGIC) {
-        let (progress, _bytes_read): (CompactDownloadProgress, usize) =
-            bincode::serde::decode_from_slice(payload, bincode::config::standard())?;
+        let progress: CompactDownloadProgress = decode_exact(payload, "compact progress")?;
         return Ok(progress.into_progress());
     }
 
-    let (progress, _bytes_read): (DownloadProgress, usize) =
-        bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
-
-    Ok(progress)
+    decode_exact(bytes, "legacy progress")
 }
 
 pub(super) fn decode_state(bytes: &[u8]) -> Result<ShareState, bincode::error::DecodeError> {
     if let Some(payload) = bytes.strip_prefix(COMPACT_STATE_MAGIC) {
-        let (state, _bytes_read): (CompactShareState, usize) =
-            bincode::serde::decode_from_slice(payload, bincode::config::standard())?;
+        let state: CompactShareState = decode_exact(payload, "compact state")?;
         return Ok(state.into_state());
     }
 
-    let (state, _bytes_read): (ShareState, usize) =
+    decode_exact(bytes, "legacy state")
+}
+
+fn decode_exact<T>(bytes: &[u8], label: &str) -> Result<T, bincode::error::DecodeError>
+where
+    T: DeserializeOwned,
+{
+    let (value, bytes_read): (T, usize) =
         bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
 
-    Ok(state)
+    if bytes_read != bytes.len() {
+        return Err(bincode::error::DecodeError::OtherString(format!(
+            "{label} has trailing bytes: decoded {bytes_read} of {} bytes",
+            bytes.len()
+        )));
+    }
+
+    Ok(value)
 }
 
 fn encode_with_magic<T: Serialize>(

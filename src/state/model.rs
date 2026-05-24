@@ -20,10 +20,19 @@ pub enum ShareMode {
     Paused,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EtleSecret {
     pub share_id: ShareId,
     pub file_key: SymmetricKey,
+}
+
+impl std::fmt::Debug for EtleSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EtleSecret")
+            .field("share_id", &self.share_id)
+            .field("file_key", &"<redacted>")
+            .finish()
+    }
 }
 
 impl EtleSecret {
@@ -37,8 +46,15 @@ impl EtleSecret {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
-        let (secret, _bytes_read): (Self, usize) =
+        let (secret, bytes_read): (Self, usize) =
             bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+        if bytes_read != bytes.len() {
+            return Err(bincode::error::DecodeError::OtherString(format!(
+                "secret has trailing bytes: decoded {bytes_read} of {} bytes",
+                bytes.len()
+            )));
+        }
 
         Ok(secret)
     }

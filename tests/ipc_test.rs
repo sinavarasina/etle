@@ -26,6 +26,7 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
         discovery_port: 7003,
         discovery_timeout_ms: 3000,
         discovery_multicast: "239.255.0.86".parse().unwrap(),
+        auth_psk: None,
     };
 
     ipc_codec::send_ipc_message(&mut client, &command)

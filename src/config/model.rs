@@ -10,6 +10,7 @@ pub struct EtleConfig {
     pub discovery_timeout_ms: Option<u64>,
     pub request_window: Option<usize>,
     pub parallel: Option<usize>,
+    pub auth_psk: Option<String>,
 }
 
 impl EtleConfig {
@@ -57,5 +58,10 @@ impl EtleConfig {
     #[must_use]
     pub fn parallel(&self) -> usize {
         self.parallel.unwrap_or(DEFAULT_DOWNLOAD_PARALLELISM)
+    }
+
+    #[must_use]
+    pub fn auth_psk(&self) -> Option<String> {
+        self.auth_psk.clone()
     }
 }

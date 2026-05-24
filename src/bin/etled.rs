@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 
 use etle::{
     config::load,
+    crypto::key_exchange::AuthPsk,
     discovery::{options::DiscoveryOptions, server},
     ipc::{path::default_ipc_socket_path, server::listener},
     network::{
@@ -66,6 +67,11 @@ enum Command {
         #[arg(long, value_name = "IPv4")]
         discovery_multicast: Option<Ipv4Addr>,
 
+        /// Pre-shared passphrase used to authenticate incoming P2P key exchange.
+        /// If omitted, ETLE_AUTH_PSK/config auth_psk is used when present.
+        #[arg(long, value_name = "PASSPHRASE")]
+        auth_psk: Option<String>,
+
         /// Disable LAN peer discovery.
         #[arg(long)]
         no_discovery: bool,
@@ -91,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
             no_ipc,
             discovery_port,
             discovery_multicast,
+            auth_psk,
             no_discovery,
         } => {
             let library_root = library_root
@@ -104,10 +111,19 @@ async fn main() -> anyhow::Result<()> {
             let ipc_socket = ipc_socket
                 .or_else(|| config.ipc_socket())
                 .unwrap_or_else(|| default_ipc_socket_path(&library_root));
+            let auth_psk = auth_psk
+                .or_else(|| std::env::var("ETLE_AUTH_PSK").ok())
+                .or_else(|| config.auth_psk());
             print_startup_banner(&library_root, listen)?;
 
             let listener = bind_listener(listen).await?;
-            let serve_options = ServeFileOptions::new(peer_id.clone(), log_level);
+            let mut serve_options = ServeFileOptions::new(peer_id.clone(), log_level);
+            if let Some(auth_psk) = auth_psk {
+                println!("[daemon] p2p auth: PSK enabled");
+                serve_options = serve_options.with_auth_psk(AuthPsk::from_passphrase(auth_psk));
+            } else {
+                println!("[daemon] p2p auth: disabled; key exchange is not MITM-resistant");
+            }
             let discovery_task = if no_discovery {
                 println!("[daemon] discovery: disabled");
                 None

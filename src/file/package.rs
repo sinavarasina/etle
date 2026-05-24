@@ -78,7 +78,7 @@ pub fn read_package_chunks(
                 if chunk_buffer.len() == chunk_size {
                     let data = std::mem::replace(&mut chunk_buffer, Vec::with_capacity(chunk_size));
                     chunks.push(PlainChunk { index, data });
-                    index = index.saturating_add(1);
+                    index = index.checked_add(1).ok_or(FileError::TooManyChunks)?;
                 }
             }
         }
@@ -140,7 +140,7 @@ fn collect_directory_layout(root: &Path) -> Result<PackageLayout, FileError> {
             entry,
             source_path: path,
         });
-        offset = offset.saturating_add(size);
+        offset = offset.checked_add(size).ok_or(FileError::PackageTooLarge)?;
     }
 
     Ok(PackageLayout {

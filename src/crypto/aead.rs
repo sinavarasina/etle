@@ -4,11 +4,18 @@ use chacha20poly1305::{
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use crate::crypto::{error::CryptoError, hash::FileId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SymmetricKey(pub [u8; 32]);
+
+impl fmt::Debug for SymmetricKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SymmetricKey(<redacted>)")
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Nonce(pub [u8; 24]);

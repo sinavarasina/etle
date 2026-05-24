@@ -28,6 +28,7 @@ pub enum IpcCommand {
         discovery_port: u16,
         discovery_timeout_ms: u64,
         discovery_multicast: Ipv4Addr,
+        auth_psk: Option<String>,
     },
     DownloadFresh {
         share_id: ShareId,
@@ -38,6 +39,7 @@ pub enum IpcCommand {
         discovery_port: u16,
         discovery_timeout_ms: u64,
         discovery_multicast: Ipv4Addr,
+        auth_psk: Option<String>,
     },
     Pause {
         share_id: ShareId,

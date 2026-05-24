@@ -282,7 +282,7 @@ fn encrypt_file_to_staging_parallel(
                 .map_err(|_| {
                     NetworkError::PeerError("parallel seed worker stopped unexpectedly".to_string())
                 })?;
-            index = index.saturating_add(1);
+            index = index.checked_add(1).ok_or(FileError::TooManyChunks)?;
         }
 
         drop(plain_tx);
@@ -345,5 +345,5 @@ fn total_chunks_for_size(total_size: u64, chunk_size: usize) -> usize {
     }
 
     let chunk_size = chunk_size as u64;
-    (total_size.saturating_add(chunk_size - 1) / chunk_size) as usize
+    usize::try_from(total_size.div_ceil(chunk_size)).unwrap_or(usize::MAX)
 }

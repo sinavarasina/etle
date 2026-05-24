@@ -87,6 +87,11 @@ enum Command {
         #[arg(long, value_name = "CHUNKS")]
         request_window: Option<usize>,
 
+        /// Pre-shared passphrase used to authenticate the P2P key exchange.
+        /// If omitted, ETLE_AUTH_PSK/config auth_psk is used when present.
+        #[arg(long, value_name = "PASSPHRASE")]
+        auth_psk: Option<String>,
+
         /// UDP port used for LAN peer discovery when --peer is omitted.
         #[arg(long, value_name = "PORT")]
         discovery_port: Option<u16>,
@@ -162,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
             no_resume,
             parallel,
             request_window,
+            auth_psk,
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
@@ -173,6 +179,9 @@ async fn main() -> anyhow::Result<()> {
                 discovery_timeout_ms.unwrap_or_else(|| config.discovery_timeout_ms());
             let discovery_multicast =
                 discovery_multicast.unwrap_or_else(|| config.discovery_multicast());
+            let auth_psk = auth_psk
+                .or_else(|| std::env::var("ETLE_AUTH_PSK").ok())
+                .or_else(|| config.auth_psk());
 
             if no_resume {
                 IpcCommand::DownloadFresh {
@@ -184,6 +193,7 @@ async fn main() -> anyhow::Result<()> {
                     discovery_port,
                     discovery_timeout_ms,
                     discovery_multicast,
+                    auth_psk,
                 }
             } else {
                 IpcCommand::Download {
@@ -195,6 +205,7 @@ async fn main() -> anyhow::Result<()> {
                     discovery_port,
                     discovery_timeout_ms,
                     discovery_multicast,
+                    auth_psk,
                 }
             }
         }
