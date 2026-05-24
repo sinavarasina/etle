@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing git tag to release, for example v0.1.0
+        required: true
+        type: string
+      draft:
+        description: Create the GitHub Release as draft
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: Mark the GitHub Release as prerelease
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and git sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Build release binaries
+        run: cargo build --locked --release --bins --all-features
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          asset="etle-${tag}-${host}"
+          exe=""
+          archive="${asset}.tar.gz"
+
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            exe=".exe"
+            archive="${asset}.zip"
+          fi
+
+          mkdir -p "dist/${asset}"
+          cp "target/release/etle-cli${exe}" "dist/${asset}/"
+          cp "target/release/etled${exe}" "dist/${asset}/"
+
+          if [[ -f README.md ]]; then cp README.md "dist/${asset}/"; fi
+          if compgen -G "LICENSE*" > /dev/null; then cp LICENSE* "dist/${asset}/"; fi
+
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path 'dist/${asset}/*' -DestinationPath '${archive}' -Force"
+          else
+            tar -czf "${archive}" -C dist "${asset}"
+          fi
+
+          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload packaged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: etle-*.tar.gz
+          if-no-files-found: ignore
+
+      - name: Upload packaged artifact on Windows
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: etle-*.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          RELEASE_DRAFT: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          RELEASE_PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          assets=(dist/*.tar.gz dist/*.zip)
+          if (( ${#assets[@]} == 0 )); then
+            echo "no release assets found" >&2
+            exit 1
+          fi
+
+          args=(--verify-tag --generate-notes --title "${RELEASE_TAG}")
+          if [[ "${RELEASE_DRAFT}" == "true" ]]; then args+=(--draft); fi
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then args+=(--prerelease); fi
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+          else
+            gh release create "${RELEASE_TAG}" "${assets[@]}" "${args[@]}"
+          fi
