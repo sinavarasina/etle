@@ -226,18 +226,14 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
-
-      - name: Install MSYS2 GTK4 runtime/build dependencies
+      - name: Install MSYS2 Rust, GTK4, and packaging tools
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
           path-type: inherit
           install: >-
+            mingw-w64-ucrt-x86_64-rust
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-gtk4
@@ -261,26 +257,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          cargo_home="$(cygpath -u "${CARGO_HOME:-${USERPROFILE}/.cargo}")"
-          export PATH="${cargo_home}/bin:/ucrt64/bin:${PATH}"
+          export PATH="/ucrt64/bin:${PATH}"
 
           which cargo
           cargo --version
+          rustc -vV
+          which pkg-config
           pkg-config --modversion gtk4
 
           cargo build \
             --locked \
             --release \
-            --target x86_64-pc-windows-gnu \
             --no-default-features \
             --features gui-relm4 \
             --bin etle-gui
 
       - name: Package Windows GUI with GTK DLL runtime
-        env:
-          PATH: /ucrt64/bin:${{ env.PATH }}
         run: |
           set -euo pipefail
+
+          export PATH="/ucrt64/bin:${PATH}"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
             version="${{ inputs.release_tag }}"
@@ -290,8 +286,9 @@ jobs:
             version="dryrun-${GITHUB_SHA::7}"
           fi
 
-          asset="etle-${version}-x86_64-pc-windows-gnu-gui"
-          exe_path="target/x86_64-pc-windows-gnu/release/etle-gui.exe"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          asset="etle-${version}-${host}-gui"
+          exe_path="target/release/etle-gui.exe"
 
           mkdir -p "dist/${asset}"
           cp "${exe_path}" "dist/${asset}/"
@@ -346,7 +343,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-gui-Windows
-          path: etle-*-windows-gnu-gui.zip
+          path: etle-*-windows*-gui.zip
           if-no-files-found: error
 
   publish:
