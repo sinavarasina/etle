@@ -1,12 +1,14 @@
 use super::prelude::*;
 use super::wire::{DiscoveryInterface, DiscoveryMessage};
 
-pub(super) fn advertised_p2p_addr(p2p_listen: SocketAddr, source_ip: IpAddr) -> SocketAddr {
-    if p2p_listen.ip().is_unspecified() {
-        SocketAddr::new(source_ip, p2p_listen.port())
-    } else {
-        p2p_listen
-    }
+pub(super) fn advertised_p2p_addr(p2p_listen: SocketAddr, _source_ip: IpAddr) -> SocketAddr {
+    // Keep 0.0.0.0/:: unspecified in the discovery response.
+    //
+    // The discovery client receives the UDP response from the seeder's real
+    // interface address and replaces an unspecified listen address with that
+    // UDP source IP. Filling this with the query source IP here would advertise
+    // the downloader's own address back to itself.
+    p2p_listen
 }
 
 pub(super) fn insert_preferred_peer(

@@ -32,14 +32,11 @@ fn advertised_addr_uses_explicit_loopback_listen_addr() {
 }
 
 #[test]
-fn advertised_addr_uses_source_ip_for_unspecified_listen_addr() {
+fn advertised_addr_keeps_unspecified_listen_addr_for_client_resolution() {
     let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7000);
     let source = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
 
-    assert_eq!(
-        super::network::advertised_p2p_addr(listen, source),
-        SocketAddr::new(source, 7000)
-    );
+    assert_eq!(super::network::advertised_p2p_addr(listen, source), listen);
 }
 
 #[test]
