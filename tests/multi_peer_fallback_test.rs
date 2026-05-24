@@ -3,11 +3,14 @@ use std::{fs, path::Path};
 use etle::{
     crypto::hash::hash_file,
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        download_file_from_peer_with_options, download_file_from_peers_with_options,
-        serve_file_to_one_peer_with_options, serve_library_share_to_one_peer,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            serve,
+        },
     },
-    state::{LibraryPaths, list_library_shares, read_progress},
+    state::{library, paths, storage},
 };
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -62,7 +65,7 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
     let bootstrap_seeder_root = seeder_root.clone();
 
     let bootstrap_server = tokio::spawn(async move {
-        serve_file_to_one_peer_with_options(
+        serve::file_once_with(
             bootstrap_listener,
             bootstrap_input,
             8,
@@ -73,7 +76,7 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
         .unwrap();
     });
 
-    let bootstrap_manifest = download_file_from_peer_with_options(
+    let bootstrap_manifest = download::from_peer_with(
         bootstrap_addr,
         &bootstrap_output,
         DownloadFileOptions::new("bootstrap-peer", TransferLogLevel::Quiet)
@@ -89,12 +92,12 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
     );
     assert!(bootstrap_manifest.chunks.len() > 2);
 
-    let shares = list_library_shares(&seeder_root).unwrap();
+    let shares = library::list(&seeder_root).unwrap();
     assert_eq!(shares.len(), 1);
     let share_id = shares[0].descriptor.share_id;
 
     copy_dir_all(&seeder_root, &partial_root);
-    let partial_paths = LibraryPaths::for_share(&partial_root, share_id);
+    let partial_paths = paths::LibraryPaths::for_share(&partial_root, share_id);
     for meta in bootstrap_manifest.chunks.iter().skip(1) {
         fs::remove_file(partial_paths.chunk_path(meta.index)).unwrap();
     }
@@ -104,7 +107,7 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
     let partial_root_task = partial_root.clone();
 
     let partial_server = tokio::spawn(async move {
-        let _ = serve_library_share_to_one_peer(
+        let _ = serve::share_once(
             partial_listener,
             partial_root_task,
             share_id,
@@ -118,7 +121,7 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
     let seeder_root_task = seeder_root.clone();
 
     let full_server = tokio::spawn(async move {
-        serve_library_share_to_one_peer(
+        serve::share_once(
             full_listener,
             seeder_root_task,
             share_id,
@@ -128,7 +131,7 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
         .unwrap();
     });
 
-    let final_manifest = download_file_from_peers_with_options(
+    let final_manifest = download::from_peers(
         vec![partial_addr, full_addr],
         &final_output,
         DownloadFileOptions::new("fallback-peer", TransferLogLevel::Quiet)
@@ -146,9 +149,12 @@ async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
         hash_file(&final_output).unwrap()
     );
 
-    let final_paths = LibraryPaths::for_share(&final_peer_root, share_id);
+    let final_paths = paths::LibraryPaths::for_share(&final_peer_root, share_id);
     assert_eq!(
-        read_progress(&final_paths).unwrap().completed_chunks.len(),
+        storage::read_progress(&final_paths)
+            .unwrap()
+            .completed_chunks
+            .len(),
         bootstrap_manifest.chunks.len()
     );
 

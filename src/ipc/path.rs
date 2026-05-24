@@ -16,7 +16,7 @@ pub fn default_ipc_socket_path(library_root: impl AsRef<Path>) -> PathBuf {
 
     library_root
         .as_ref()
-        .join(crate::state::ETLE_DIR_NAME)
+        .join(crate::state::paths::ETLE_DIR_NAME)
         .join(DEFAULT_IPC_SOCKET_FILE_NAME)
 }
 

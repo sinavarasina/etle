@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::{
     crypto::error::CryptoError,
     file::error::FileError,
-    protocol::{ProtocolError, WireMessage},
+    protocol::{error::ProtocolError, message::WireMessage},
 };
 
 #[derive(Debug, Error)]

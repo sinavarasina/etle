@@ -1,9 +1,7 @@
-pub mod app;
 pub mod config;
 pub mod crypto;
 pub mod discovery;
 pub mod file;
-pub mod gui;
 pub mod ipc;
 pub mod network;
 pub mod protocol;

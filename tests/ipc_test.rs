@@ -3,8 +3,9 @@ use std::{net::SocketAddr, path::PathBuf};
 use etle::{
     file::descriptor::ShareId,
     ipc::{
-        IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, MAX_IPC_FRAME_SIZE,
-        default_ipc_socket_path, default_windows_pipe_name, receive_ipc_message, send_ipc_message,
+        codec::{self as ipc_codec, MAX_IPC_FRAME_SIZE},
+        message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
+        path as ipc_path,
     },
 };
 use tokio::io::duplex;
@@ -27,8 +28,10 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
         discovery_multicast: "239.255.0.86".parse().unwrap(),
     };
 
-    send_ipc_message(&mut client, &command).await.unwrap();
-    let decoded_command: IpcCommand = receive_ipc_message(&mut daemon).await.unwrap();
+    ipc_codec::send_ipc_message(&mut client, &command)
+        .await
+        .unwrap();
+    let decoded_command: IpcCommand = ipc_codec::receive_ipc_message(&mut daemon).await.unwrap();
     assert_eq!(decoded_command, command);
 
     let summary = IpcShareSummary {
@@ -43,30 +46,34 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
     let response = IpcResponse::Shares {
         shares: vec![summary.clone()],
     };
-    send_ipc_message(&mut daemon, &response).await.unwrap();
-    let decoded_response: IpcResponse = receive_ipc_message(&mut client).await.unwrap();
+    ipc_codec::send_ipc_message(&mut daemon, &response)
+        .await
+        .unwrap();
+    let decoded_response: IpcResponse = ipc_codec::receive_ipc_message(&mut client).await.unwrap();
     assert_eq!(decoded_response, response);
 
     let event = IpcEvent::ServerStarted { listen };
-    send_ipc_message(&mut daemon, &event).await.unwrap();
-    let decoded_event: IpcEvent = receive_ipc_message(&mut client).await.unwrap();
+    ipc_codec::send_ipc_message(&mut daemon, &event)
+        .await
+        .unwrap();
+    let decoded_event: IpcEvent = ipc_codec::receive_ipc_message(&mut client).await.unwrap();
     assert_eq!(decoded_event, event);
 }
 
 #[cfg(unix)]
 #[test]
 fn ipc_paths_are_under_etle_state_directory() {
-    let path = default_ipc_socket_path(PathBuf::from("/tmp/etle-root"));
+    let path = ipc_path::default_ipc_socket_path(PathBuf::from("/tmp/etle-root"));
     assert_eq!(path, PathBuf::from("/tmp/etle-root/.etle/etled.sock"));
-    assert_eq!(default_windows_pipe_name(), r"\\.\pipe\etled");
+    assert_eq!(ipc_path::default_windows_pipe_name(), r"\\.\pipe\etled");
 }
 
 #[cfg(windows)]
 #[test]
 fn ipc_paths_use_windows_named_pipe() {
-    let path = default_ipc_socket_path(PathBuf::from(r"C:\Temp\etle-root"));
+    let path = ipc_path::default_ipc_socket_path(PathBuf::from(r"C:\Temp\etle-root"));
     assert_eq!(path, PathBuf::from(r"\\.\pipe\etled"));
-    assert_eq!(default_windows_pipe_name(), r"\\.\pipe\etled");
+    assert_eq!(ipc_path::default_windows_pipe_name(), r"\\.\pipe\etled");
 }
 
 #[test]

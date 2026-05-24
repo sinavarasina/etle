@@ -4,10 +4,14 @@ use etle::{
     crypto::hash::hash_file,
     file::descriptor::{EtleDescriptor, FileEntry},
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        download_file_from_peer_with_options, serve_file_to_one_peer_with_options,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            serve,
+        },
     },
-    state::{LibraryPaths, ShareMode, read_progress, read_state},
+    state::{model, paths, storage},
 };
 
 fn temp_path(name: &str) -> PathBuf {
@@ -38,7 +42,7 @@ async fn transfer_persists_seed_and_download_library_state() {
     let server_root = seeder_root.clone();
 
     let server = tokio::spawn(async move {
-        serve_file_to_one_peer_with_options(
+        serve::file_once_with(
             listener,
             server_input,
             8,
@@ -48,7 +52,7 @@ async fn transfer_persists_seed_and_download_library_state() {
         .unwrap();
     });
 
-    let manifest = download_file_from_peer_with_options(
+    let manifest = download::from_peer_with(
         addr,
         &output,
         DownloadFileOptions::new("peer", TransferLogLevel::Quiet).with_library_root(&peer_root),
@@ -72,18 +76,27 @@ async fn transfer_persists_seed_and_download_library_state() {
         manifest.chunks.clone(),
     );
 
-    let seeder_paths = LibraryPaths::for_share(&seeder_root, descriptor.share_id);
-    let peer_paths = LibraryPaths::for_share(&peer_root, descriptor.share_id);
+    let seeder_paths = paths::LibraryPaths::for_share(&seeder_root, descriptor.share_id);
+    let peer_paths = paths::LibraryPaths::for_share(&peer_root, descriptor.share_id);
 
     assert!(seeder_paths.descriptor_path().is_file());
     assert!(seeder_paths.secret_path().is_file());
     assert!(peer_paths.descriptor_path().is_file());
     assert!(peer_paths.secret_path().is_file());
 
-    assert_eq!(read_state(&seeder_paths).unwrap().mode, ShareMode::Seeding);
-    assert_eq!(read_state(&peer_paths).unwrap().mode, ShareMode::Completed);
     assert_eq!(
-        read_progress(&peer_paths).unwrap().completed_chunks.len(),
+        storage::read_state(&seeder_paths).unwrap().mode,
+        model::ShareMode::Seeding
+    );
+    assert_eq!(
+        storage::read_state(&peer_paths).unwrap().mode,
+        model::ShareMode::Completed
+    );
+    assert_eq!(
+        storage::read_progress(&peer_paths)
+            .unwrap()
+            .completed_chunks
+            .len(),
         manifest.chunks.len()
     );
 

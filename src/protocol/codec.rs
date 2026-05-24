@@ -26,7 +26,7 @@ pub enum ReceivedChunkFrame {
     Message(WireMessage),
 }
 
-pub async fn send_message<W>(writer: &mut W, message: &WireMessage) -> Result<(), ProtocolError>
+pub async fn send<W>(writer: &mut W, message: &WireMessage) -> Result<(), ProtocolError>
 where
     W: AsyncWrite + Unpin,
 {
@@ -46,7 +46,7 @@ where
     Ok(())
 }
 
-pub async fn receive_message<R>(reader: &mut R) -> Result<WireMessage, ProtocolError>
+pub async fn receive<R>(reader: &mut R) -> Result<WireMessage, ProtocolError>
 where
     R: AsyncRead + Unpin,
 {
@@ -61,7 +61,7 @@ where
     receive_bincode_frame_after_first_byte(reader, len, first[0]).await
 }
 
-pub async fn receive_chunk_frame_to_file<R>(
+pub async fn receive_chunk_to_file<R>(
     reader: &mut R,
     output_path: impl AsRef<Path>,
 ) -> Result<ReceivedChunkFrame, ProtocolError>
@@ -83,7 +83,7 @@ where
         .map(ReceivedChunkFrame::RawChunkFile)
 }
 
-pub async fn send_raw_chunk_file<W>(
+pub async fn send_chunk_file<W>(
     writer: &mut W,
     index: u32,
     path: impl AsRef<Path>,

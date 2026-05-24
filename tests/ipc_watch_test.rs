@@ -8,8 +8,9 @@ use std::{
 };
 
 use etle::ipc::{
-    IpcCommand, IpcEvent, IpcResponse, publish_ipc_event, receive_ipc_message, send_ipc_command,
-    send_ipc_message, serve_ipc_forever,
+    client as ipc_client, codec as ipc_codec,
+    message::{IpcCommand, IpcEvent, IpcResponse},
+    server as ipc_server,
 };
 use tokio::net::UnixStream;
 
@@ -21,15 +22,20 @@ async fn ipc_event_subscription_does_not_block_other_commands() {
 
     let server_root = root.clone();
     let server_socket = socket_path.clone();
-    let server = tokio::spawn(async move { serve_ipc_forever(server_socket, server_root).await });
+    let server =
+        tokio::spawn(
+            async move { ipc_server::listener::forever(server_socket, server_root).await },
+        );
 
     wait_for_ping(&socket_path).await;
 
     let mut watch_stream = UnixStream::connect(&socket_path).await.unwrap();
-    send_ipc_message(&mut watch_stream, &IpcCommand::SubscribeEvents)
+    ipc_codec::send_ipc_message(&mut watch_stream, &IpcCommand::SubscribeEvents)
         .await
         .unwrap();
-    let ack: IpcResponse = receive_ipc_message(&mut watch_stream).await.unwrap();
+    let ack: IpcResponse = ipc_codec::receive_ipc_message(&mut watch_stream)
+        .await
+        .unwrap();
     assert_eq!(
         ack,
         IpcResponse::Ack {
@@ -37,28 +43,28 @@ async fn ipc_event_subscription_does_not_block_other_commands() {
         }
     );
 
-    let ping = send_ipc_command(&socket_path, IpcCommand::Ping)
+    let ping = ipc_client::send_ipc_command(&socket_path, IpcCommand::Ping)
         .await
         .unwrap();
     assert_eq!(ping, IpcResponse::Pong);
 
-    let shares = send_ipc_command(&socket_path, IpcCommand::ListShares)
+    let shares = ipc_client::send_ipc_command(&socket_path, IpcCommand::ListShares)
         .await
         .unwrap();
     assert_eq!(shares, IpcResponse::Shares { shares: vec![] });
 
     let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7000);
-    publish_ipc_event(IpcEvent::ServerStarted { listen });
+    ipc_server::events::publish(IpcEvent::ServerStarted { listen });
     let event: IpcEvent = tokio::time::timeout(
         Duration::from_secs(1),
-        receive_ipc_message(&mut watch_stream),
+        ipc_codec::receive_ipc_message(&mut watch_stream),
     )
     .await
     .unwrap()
     .unwrap();
     assert_eq!(event, IpcEvent::ServerStarted { listen });
 
-    let shutdown = send_ipc_command(&socket_path, IpcCommand::Shutdown)
+    let shutdown = ipc_client::send_ipc_command(&socket_path, IpcCommand::Shutdown)
         .await
         .unwrap();
     assert_eq!(
@@ -75,7 +81,7 @@ async fn ipc_event_subscription_does_not_block_other_commands() {
 async fn wait_for_ping(socket_path: &PathBuf) {
     for _ in 0..50 {
         if matches!(
-            send_ipc_command(socket_path, IpcCommand::Ping).await,
+            ipc_client::send_ipc_command(socket_path, IpcCommand::Ping).await,
             Ok(IpcResponse::Pong)
         ) {
             return;

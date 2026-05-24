@@ -6,11 +6,17 @@ use std::{
 use clap::{Parser, Subcommand};
 
 use etle::{
-    config::{default_listen_addr, load_config},
-    discovery::{DiscoveryOptions, serve_discovery_forever_with_options},
-    ipc::{default_ipc_socket_path, serve_ipc_forever},
-    network::{ServeFileOptions, TransferLogLevel, bind_listener, serve_library_forever},
-    state::{default_library_root, list_library_shares},
+    config::load,
+    discovery::{options::DiscoveryOptions, server},
+    ipc::{path::default_ipc_socket_path, server::listener},
+    network::{
+        tcp::bind_listener,
+        transfer::{
+            options::{ServeFileOptions, TransferLogLevel},
+            serve,
+        },
+    },
+    state::{library, paths::default_library_root},
 };
 
 #[derive(Debug, Parser)]
@@ -69,7 +75,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = load_config()?;
+    let config = load::load()?;
     let log_level = if cli.verbose {
         TransferLogLevel::Verbose
     } else {
@@ -91,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| config.library_root())
                 .unwrap_or_else(default_library_root);
             let listen =
-                listen.unwrap_or_else(|| config.listen.unwrap_or_else(default_listen_addr));
+                listen.unwrap_or_else(|| config.listen.unwrap_or_else(load::default_listen_addr));
             let discovery_port = discovery_port.unwrap_or_else(|| config.discovery_port());
             let discovery_multicast =
                 discovery_multicast.unwrap_or_else(|| config.discovery_multicast());
@@ -112,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
                 let discovery_options =
                     DiscoveryOptions::new(discovery_port).with_multicast(discovery_multicast);
                 Some(tokio::spawn(async move {
-                    if let Err(error) = serve_discovery_forever_with_options(
+                    if let Err(error) = server::serve_with(
                         discovery_library_root,
                         listen,
                         peer_id,
@@ -127,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
 
             if no_ipc {
                 println!("[daemon] ipc: disabled");
-                let result = serve_library_forever(listener, &library_root, serve_options).await;
+                let result = serve::library_forever(listener, &library_root, serve_options).await;
                 if let Some(task) = discovery_task {
                     task.abort();
                 }
@@ -138,10 +144,10 @@ async fn main() -> anyhow::Result<()> {
 
                 let p2p_library_root = library_root.clone();
                 let p2p_task = tokio::spawn(async move {
-                    serve_library_forever(listener, p2p_library_root, serve_options).await
+                    serve::library_forever(listener, p2p_library_root, serve_options).await
                 });
 
-                let ipc_result = serve_ipc_forever(&ipc_socket, &library_root).await;
+                let ipc_result = listener::forever(&ipc_socket, &library_root).await;
                 p2p_task.abort();
                 if let Some(task) = discovery_task {
                     task.abort();
@@ -161,7 +167,7 @@ fn print_startup_banner(library_root: &std::path::Path, listen: SocketAddr) -> a
     println!("[daemon] mode: foreground; press Ctrl+C to stop");
     println!("[daemon] peers must request a share_id with RequestShare");
 
-    let shares = list_library_shares(library_root)?;
+    let shares = library::list(library_root)?;
     if shares.is_empty() {
         println!("[daemon] no local shares found yet");
     } else {

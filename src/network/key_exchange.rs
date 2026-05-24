@@ -6,8 +6,11 @@ use crate::{
         hash::FileId,
         key_exchange::{EphemeralKeypair, SharedSecretBytes, derive_file_key},
     },
-    network::NetworkError,
-    protocol::{WireMessage, receive_message, send_message},
+    network::error::NetworkError,
+    protocol::{
+        codec::{receive, send},
+        message::WireMessage,
+    },
 };
 
 pub async fn client_shared_secret_exchange<S>(
@@ -19,9 +22,9 @@ where
     let keypair = EphemeralKeypair::generate();
     let public_key = keypair.public_key();
 
-    send_message(stream, &WireMessage::KeyExchange { public_key }).await?;
+    send(stream, &WireMessage::KeyExchange { public_key }).await?;
 
-    let server_public_key = match receive_message(stream).await? {
+    let server_public_key = match receive(stream).await? {
         WireMessage::KeyExchange { public_key } => public_key,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -40,7 +43,7 @@ pub async fn server_shared_secret_exchange<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let client_public_key = match receive_message(stream).await? {
+    let client_public_key = match receive(stream).await? {
         WireMessage::KeyExchange { public_key } => public_key,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -53,7 +56,7 @@ where
     let keypair = EphemeralKeypair::generate();
     let public_key = keypair.public_key();
 
-    send_message(stream, &WireMessage::KeyExchange { public_key }).await?;
+    send(stream, &WireMessage::KeyExchange { public_key }).await?;
 
     Ok(keypair.diffie_hellman(client_public_key)?)
 }

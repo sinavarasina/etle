@@ -7,7 +7,9 @@ use std::{
 };
 
 use etle::ipc::{
-    IpcCommand, IpcResponse, receive_ipc_message, send_ipc_message, serve_ipc_forever,
+    codec as ipc_codec,
+    message::{IpcCommand, IpcResponse},
+    server as ipc_server,
 };
 use tokio::{net::UnixStream, time::sleep};
 
@@ -23,7 +25,10 @@ async fn unix_ipc_server_handles_ping_list_and_shutdown() {
 
     let server_root = root.clone();
     let server_socket = socket.clone();
-    let server = tokio::spawn(async move { serve_ipc_forever(server_socket, server_root).await });
+    let server =
+        tokio::spawn(
+            async move { ipc_server::listener::forever(server_socket, server_root).await },
+        );
 
     let response = roundtrip(&socket, IpcCommand::Ping).await;
     assert_eq!(response, IpcResponse::Pong);
@@ -46,8 +51,10 @@ async fn unix_ipc_server_handles_ping_list_and_shutdown() {
 
 async fn roundtrip(socket: &Path, command: IpcCommand) -> IpcResponse {
     let mut stream = connect_with_retry(socket).await;
-    send_ipc_message(&mut stream, &command).await.unwrap();
-    receive_ipc_message(&mut stream).await.unwrap()
+    ipc_codec::send_ipc_message(&mut stream, &command)
+        .await
+        .unwrap();
+    ipc_codec::receive_ipc_message(&mut stream).await.unwrap()
 }
 
 async fn connect_with_retry(socket: &Path) -> UnixStream {

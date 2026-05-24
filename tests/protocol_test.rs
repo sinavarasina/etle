@@ -7,7 +7,11 @@ use etle::{
         key_exchange::PublicKeyBytes,
     },
     file::manifest::{ChunkMeta, Manifest},
-    protocol::{MAX_FRAME_SIZE, ProtocolError, WireMessage, receive_message, send_message},
+    protocol::{
+        codec::{MAX_FRAME_SIZE, receive, send},
+        error::ProtocolError,
+        message::WireMessage,
+    },
 };
 
 fn sample_manifest() -> Manifest {
@@ -72,8 +76,8 @@ async fn codec_sends_and_receives_message() {
         peer_id: "peer-a".to_string(),
     };
 
-    send_message(&mut client, &sent).await.unwrap();
-    let received = receive_message(&mut server).await.unwrap();
+    send(&mut client, &sent).await.unwrap();
+    let received = receive(&mut server).await.unwrap();
 
     assert_eq!(received, sent);
 }
@@ -85,7 +89,7 @@ async fn codec_rejects_empty_frame() {
     client.write_all(&0_u32.to_be_bytes()).await.unwrap();
 
     assert!(matches!(
-        receive_message(&mut server).await,
+        receive(&mut server).await,
         Err(ProtocolError::EmptyFrame)
     ));
 }
@@ -98,7 +102,7 @@ async fn codec_rejects_too_large_frame() {
     client.write_all(&too_large).await.unwrap();
 
     assert!(matches!(
-        receive_message(&mut server).await,
+        receive(&mut server).await,
         Err(ProtocolError::FrameTooLarge { .. })
     ));
 }

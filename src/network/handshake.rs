@@ -1,10 +1,13 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    network::NetworkError,
+    network::error::NetworkError,
     protocol::{
-        CAPABILITY_RAW_CHUNK_FRAME, CAPABILITY_WINDOWED_REQUESTS, ETLE_WIRE_PROTOCOL_VERSION,
-        WireMessage, receive_message, send_message,
+        codec::{receive, send},
+        message::{
+            CAPABILITY_RAW_CHUNK_FRAME, CAPABILITY_WINDOWED_REQUESTS, ETLE_WIRE_PROTOCOL_VERSION,
+            WireMessage,
+        },
     },
 };
 
@@ -15,7 +18,7 @@ pub async fn client_hello_handshake<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    send_message(
+    send(
         stream,
         &WireMessage::Hello {
             peer_id: peer_id.into(),
@@ -23,7 +26,7 @@ where
     )
     .await?;
 
-    match receive_message(stream).await? {
+    match receive(stream).await? {
         WireMessage::Hello { peer_id } => Ok(peer_id),
         actual => Err(NetworkError::UnexpectedMessage {
             expected: "Hello",
@@ -39,7 +42,7 @@ pub async fn server_hello_handshake<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let remote_peer_id = match receive_message(stream).await? {
+    let remote_peer_id = match receive(stream).await? {
         WireMessage::Hello { peer_id } => peer_id,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -49,7 +52,7 @@ where
         }
     };
 
-    send_message(
+    send(
         stream,
         &WireMessage::Hello {
             peer_id: peer_id.into(),
@@ -104,7 +107,7 @@ async fn send_local_capabilities<S>(stream: &mut S) -> Result<(), NetworkError>
 where
     S: AsyncWrite + Unpin,
 {
-    send_message(
+    send(
         stream,
         &WireMessage::Capabilities {
             protocol_version: ETLE_WIRE_PROTOCOL_VERSION,
@@ -120,7 +123,7 @@ async fn receive_and_validate_peer_capabilities<S>(stream: &mut S) -> Result<(),
 where
     S: AsyncRead + Unpin,
 {
-    let (protocol_version, features) = match receive_message(stream).await? {
+    let (protocol_version, features) = match receive(stream).await? {
         WireMessage::Capabilities {
             protocol_version,
             features,

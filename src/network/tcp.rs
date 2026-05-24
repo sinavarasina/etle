@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 
-use crate::network::NetworkError;
+use crate::network::error::NetworkError;
 
 pub async fn bind_listener<A>(addr: A) -> Result<TcpListener, NetworkError>
 where

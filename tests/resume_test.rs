@@ -3,14 +3,14 @@ use std::{fs, path::PathBuf};
 use etle::{
     crypto::hash::hash_file,
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        download_file_from_peer_with_options, serve_file_to_one_peer_with_options,
-        serve_library_share_to_one_peer,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            serve,
+        },
     },
-    state::{
-        DownloadProgress, LibraryPaths, ShareMode, ShareState, list_library_shares, read_progress,
-        write_progress, write_state,
-    },
+    state::{library, model, paths, storage},
 };
 
 fn temp_path(name: &str) -> PathBuf {
@@ -43,7 +43,7 @@ async fn download_can_resume_from_existing_verified_chunks() {
     let server_root = seeder_root.clone();
 
     let original_server = tokio::spawn(async move {
-        serve_file_to_one_peer_with_options(
+        serve::file_once_with(
             original_listener,
             server_input,
             8,
@@ -54,7 +54,7 @@ async fn download_can_resume_from_existing_verified_chunks() {
         .unwrap();
     });
 
-    let manifest = download_file_from_peer_with_options(
+    let manifest = download::from_peer_with(
         original_addr,
         &first_output,
         DownloadFileOptions::new("first-peer", TransferLogLevel::Quiet)
@@ -70,17 +70,17 @@ async fn download_can_resume_from_existing_verified_chunks() {
     );
     assert!(manifest.chunks.len() > 1);
 
-    let shares = list_library_shares(&peer_root).unwrap();
+    let shares = library::list(&peer_root).unwrap();
     assert_eq!(shares.len(), 1);
     let share_id = shares[0].descriptor.share_id;
-    let peer_paths = LibraryPaths::for_share(&peer_root, share_id);
+    let peer_paths = paths::LibraryPaths::for_share(&peer_root, share_id);
 
     let first_chunk = manifest.chunks[0].index;
-    let partial_progress = DownloadProgress::new(share_id, vec![first_chunk]);
-    write_progress(&peer_paths, &partial_progress).unwrap();
-    write_state(
+    let partial_progress = model::DownloadProgress::new(share_id, vec![first_chunk]);
+    storage::write_progress(&peer_paths, &partial_progress).unwrap();
+    storage::write_state(
         &peer_paths,
-        &ShareState::from_progress(ShareMode::Downloading, None, &partial_progress),
+        &model::ShareState::from_progress(model::ShareMode::Downloading, None, &partial_progress),
     )
     .unwrap();
 
@@ -93,7 +93,7 @@ async fn download_can_resume_from_existing_verified_chunks() {
     let seeder_root_task = seeder_root.clone();
 
     let state_server = tokio::spawn(async move {
-        serve_library_share_to_one_peer(
+        serve::share_once(
             state_listener,
             seeder_root_task,
             share_id,
@@ -103,7 +103,7 @@ async fn download_can_resume_from_existing_verified_chunks() {
         .unwrap();
     });
 
-    download_file_from_peer_with_options(
+    download::from_peer_with(
         state_addr,
         &resumed_output,
         DownloadFileOptions::new("resume-peer", TransferLogLevel::Quiet)
@@ -119,7 +119,10 @@ async fn download_can_resume_from_existing_verified_chunks() {
         hash_file(&resumed_output).unwrap()
     );
     assert_eq!(
-        read_progress(&peer_paths).unwrap().completed_chunks.len(),
+        storage::read_progress(&peer_paths)
+            .unwrap()
+            .completed_chunks
+            .len(),
         manifest.chunks.len()
     );
 

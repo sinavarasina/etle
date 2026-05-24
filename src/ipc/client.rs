@@ -1,9 +1,12 @@
 use std::path::Path;
 
-use crate::ipc::{IpcCommand, IpcError, IpcEvent, IpcResponse};
+use crate::ipc::{
+    error::IpcError,
+    message::{IpcCommand, IpcEvent, IpcResponse},
+};
 
 #[cfg(any(unix, windows))]
-use crate::ipc::{receive_ipc_message, send_ipc_message};
+use crate::ipc::codec::{receive_ipc_message, send_ipc_message};
 
 #[cfg(unix)]
 use tokio::net::UnixStream;

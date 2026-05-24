@@ -3,11 +3,14 @@ use std::{fs, path::Path};
 use etle::{
     crypto::hash::hash_file,
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        download_file_from_peer_with_options, download_file_from_peers_parallel_with_options,
-        serve_file_to_one_peer_with_options, serve_library_share_to_one_peer,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            serve,
+        },
     },
-    state::{LibraryPaths, list_library_shares, read_progress},
+    state::{library, paths, storage},
 };
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -62,7 +65,7 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
     let bootstrap_seeder_root = seeder_a_root.clone();
 
     let bootstrap_server = tokio::spawn(async move {
-        serve_file_to_one_peer_with_options(
+        serve::file_once_with(
             bootstrap_listener,
             bootstrap_input,
             8,
@@ -73,7 +76,7 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
         .unwrap();
     });
 
-    let bootstrap_manifest = download_file_from_peer_with_options(
+    let bootstrap_manifest = download::from_peer_with(
         bootstrap_addr,
         &bootstrap_output,
         DownloadFileOptions::new("bootstrap-peer", TransferLogLevel::Quiet)
@@ -89,7 +92,7 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
     );
     assert!(bootstrap_manifest.chunks.len() > 2);
 
-    let shares = list_library_shares(&seeder_a_root).unwrap();
+    let shares = library::list(&seeder_a_root).unwrap();
     assert_eq!(shares.len(), 1);
     let share_id = shares[0].descriptor.share_id;
 
@@ -97,8 +100,8 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
 
     // Simulate partial seeders: each peer has only part of the encrypted
     // chunk set, but their availability union is complete.
-    let seeder_a_paths = LibraryPaths::for_share(&seeder_a_root, share_id);
-    let seeder_b_paths = LibraryPaths::for_share(&seeder_b_root, share_id);
+    let seeder_a_paths = paths::LibraryPaths::for_share(&seeder_a_root, share_id);
+    let seeder_b_paths = paths::LibraryPaths::for_share(&seeder_b_root, share_id);
     for meta in &bootstrap_manifest.chunks {
         if meta.index % 2 == 0 {
             fs::remove_file(seeder_b_paths.chunk_path(meta.index)).unwrap();
@@ -112,7 +115,7 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
     let seeder_a_root_task = seeder_a_root.clone();
 
     let seeder_a = tokio::spawn(async move {
-        serve_library_share_to_one_peer(
+        serve::share_once(
             seeder_a_listener,
             seeder_a_root_task,
             share_id,
@@ -127,7 +130,7 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
     let seeder_b_root_task = seeder_b_root.clone();
 
     let seeder_b = tokio::spawn(async move {
-        serve_library_share_to_one_peer(
+        serve::share_once(
             seeder_b_listener,
             seeder_b_root_task,
             share_id,
@@ -137,7 +140,7 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
         .unwrap();
     });
 
-    let final_manifest = download_file_from_peers_parallel_with_options(
+    let final_manifest = download::from_peers_parallel(
         vec![seeder_a_addr, seeder_b_addr],
         &final_output,
         DownloadFileOptions::new("parallel-peer", TransferLogLevel::Quiet)
@@ -156,9 +159,12 @@ async fn parallel_download_fetches_chunks_from_multiple_seeders() {
         hash_file(&final_output).unwrap()
     );
 
-    let final_paths = LibraryPaths::for_share(&final_peer_root, share_id);
+    let final_paths = paths::LibraryPaths::for_share(&final_peer_root, share_id);
     assert_eq!(
-        read_progress(&final_paths).unwrap().completed_chunks.len(),
+        storage::read_progress(&final_paths)
+            .unwrap()
+            .completed_chunks
+            .len(),
         bootstrap_manifest.chunks.len()
     );
 

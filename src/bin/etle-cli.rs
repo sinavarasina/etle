@@ -9,13 +9,14 @@ use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cli")]
 use etle::{
-    config::load_config,
+    config::load,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
-        IpcCommand, IpcEvent, IpcResponse, IpcShareSummary, default_ipc_socket_path,
-        send_ipc_command, subscribe_ipc_events,
+        client::{send_ipc_command, subscribe_ipc_events},
+        message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
+        path::default_ipc_socket_path,
     },
-    state::default_library_root,
+    state::paths::default_library_root,
 };
 
 #[cfg(feature = "cli")]
@@ -126,7 +127,7 @@ enum DaemonCommand {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = load_config()?;
+    let config = load::load()?;
     let library_root = config.library_root().unwrap_or_else(default_library_root);
     let socket_path = cli
         .ipc_socket

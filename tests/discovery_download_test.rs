@@ -7,13 +7,16 @@ use std::{
 
 use etle::{
     discovery::{
-        DiscoveryOptions, discover_peers_for_share_with_options,
-        serve_discovery_forever_with_options,
+        client as discovery_client, options::DiscoveryOptions, server as discovery_server,
     },
     file::chunker::DEFAULT_CHUNK_SIZE,
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, add_file_to_library,
-        bind_listener, download_file_from_peers_with_options, serve_library_forever,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            seed, serve,
+        },
     },
 };
 
@@ -28,7 +31,7 @@ async fn discovery_finds_one_local_seeder_and_downloads_without_manual_peer() {
     let input = root.join("sample.bin");
     fs::write(&input, deterministic_bytes(2 * 1024 * 1024 + 777)).unwrap();
 
-    let descriptor = add_file_to_library(
+    let descriptor = seed::add(
         &input,
         DEFAULT_CHUNK_SIZE / 4,
         &seeder_root,
@@ -42,7 +45,7 @@ async fn discovery_finds_one_local_seeder_and_downloads_without_manual_peer() {
 
     let p2p_root = seeder_root.clone();
     let p2p_task = tokio::spawn(async move {
-        serve_library_forever(
+        serve::library_forever(
             listener,
             p2p_root,
             ServeFileOptions::new("discovery-test-seeder", TransferLogLevel::Quiet),
@@ -52,7 +55,7 @@ async fn discovery_finds_one_local_seeder_and_downloads_without_manual_peer() {
 
     let discovery_root = seeder_root.clone();
     let discovery_task = tokio::spawn(async move {
-        serve_discovery_forever_with_options(
+        discovery_server::serve_with(
             discovery_root,
             p2p_addr,
             "discovery-test-seeder",
@@ -70,7 +73,7 @@ async fn discovery_finds_one_local_seeder_and_downloads_without_manual_peer() {
     assert_eq!(peers, vec![p2p_addr]);
 
     let output = root.join("downloaded.bin");
-    let manifest = download_file_from_peers_with_options(
+    let manifest = download::from_peers(
         peers,
         &output,
         DownloadFileOptions::new("discovery-test-downloader", TransferLogLevel::Quiet)
@@ -93,7 +96,7 @@ async fn wait_for_discovered_peers(
     discovery_port: u16,
 ) -> Option<Vec<SocketAddr>> {
     for _ in 0..20 {
-        let peers = discover_peers_for_share_with_options(
+        let peers = discovery_client::peers_with(
             share_id,
             DiscoveryOptions::new(discovery_port)
                 .with_timeout(Duration::from_millis(150))

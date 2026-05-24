@@ -9,10 +9,6 @@ use crate::{
     file::{descriptor::ShareId, manifest::Manifest},
 };
 
-/// Messages exchanged by ETLE peers.
-///
-/// This is intentionally small for Sprint 2: it only covers handshake,
-/// key exchange, manifest transfer, chunk availability, and chunk transfer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WireMessage {
     Hello {

@@ -3,11 +3,14 @@ use std::{fs, path::PathBuf};
 use etle::{
     crypto::hash::hash_file,
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        download_file_from_peer_with_options, serve_file_to_one_peer_with_options,
-        serve_library_share_to_one_peer,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            serve,
+        },
     },
-    state::list_library_shares,
+    state::library,
 };
 
 fn temp_path(name: &str) -> PathBuf {
@@ -42,7 +45,7 @@ async fn completed_download_state_can_seed_same_file_again() {
     let original_seed_root_task = original_seed_root.clone();
 
     let original_server = tokio::spawn(async move {
-        serve_file_to_one_peer_with_options(
+        serve::file_once_with(
             original_listener,
             original_input,
             8,
@@ -53,7 +56,7 @@ async fn completed_download_state_can_seed_same_file_again() {
         .unwrap();
     });
 
-    let first_manifest = download_file_from_peer_with_options(
+    let first_manifest = download::from_peer_with(
         original_addr,
         &first_output,
         DownloadFileOptions::new("first-peer", TransferLogLevel::Quiet)
@@ -68,7 +71,7 @@ async fn completed_download_state_can_seed_same_file_again() {
         hash_file(&first_output).unwrap()
     );
 
-    let shares = list_library_shares(&downloaded_seed_root).unwrap();
+    let shares = library::list(&downloaded_seed_root).unwrap();
     assert_eq!(shares.len(), 1);
     let share_id = shares[0].descriptor.share_id;
     assert_eq!(
@@ -81,7 +84,7 @@ async fn completed_download_state_can_seed_same_file_again() {
     let downloaded_seed_root_task = downloaded_seed_root.clone();
 
     let state_server = tokio::spawn(async move {
-        serve_library_share_to_one_peer(
+        serve::share_once(
             state_listener,
             downloaded_seed_root_task,
             share_id,
@@ -91,7 +94,7 @@ async fn completed_download_state_can_seed_same_file_again() {
         .unwrap();
     });
 
-    download_file_from_peer_with_options(
+    download::from_peer_with(
         state_addr,
         &second_output,
         DownloadFileOptions::new("second-peer", TransferLogLevel::Quiet)

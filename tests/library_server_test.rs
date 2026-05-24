@@ -3,11 +3,14 @@ use std::{fs, path::PathBuf};
 use etle::{
     crypto::hash::hash_file,
     network::{
-        DownloadFileOptions, ServeFileOptions, TransferLogLevel, bind_listener,
-        download_file_from_peer_with_options, serve_file_to_one_peer_with_options,
-        serve_library_to_one_peer,
+        tcp::bind_listener,
+        transfer::{
+            download,
+            options::{DownloadFileOptions, ServeFileOptions, TransferLogLevel},
+            serve,
+        },
     },
-    state::list_library_shares,
+    state::library,
 };
 
 fn temp_path(name: &str) -> PathBuf {
@@ -42,7 +45,7 @@ async fn library_server_serves_requested_share_id() {
     let seed_root_task = seed_root.clone();
 
     let bootstrap_server = tokio::spawn(async move {
-        serve_file_to_one_peer_with_options(
+        serve::file_once_with(
             bootstrap_listener,
             bootstrap_input,
             8,
@@ -53,7 +56,7 @@ async fn library_server_serves_requested_share_id() {
         .unwrap();
     });
 
-    download_file_from_peer_with_options(
+    download::from_peer_with(
         bootstrap_addr,
         &bootstrap_output,
         DownloadFileOptions::new("bootstrap-peer", TransferLogLevel::Quiet)
@@ -63,7 +66,7 @@ async fn library_server_serves_requested_share_id() {
     .unwrap();
     bootstrap_server.await.unwrap();
 
-    let shares = list_library_shares(&seed_root).unwrap();
+    let shares = library::list(&seed_root).unwrap();
     assert_eq!(shares.len(), 1);
     let share_id = shares[0].descriptor.share_id;
 
@@ -72,7 +75,7 @@ async fn library_server_serves_requested_share_id() {
     let library_root_task = seed_root.clone();
 
     let library_server = tokio::spawn(async move {
-        serve_library_to_one_peer(
+        serve::library_once(
             library_listener,
             library_root_task,
             ServeFileOptions::new("library-seeder", TransferLogLevel::Quiet),
@@ -81,7 +84,7 @@ async fn library_server_serves_requested_share_id() {
         .unwrap();
     });
 
-    download_file_from_peer_with_options(
+    download::from_peer_with(
         library_addr,
         &requested_output,
         DownloadFileOptions::new("requesting-peer", TransferLogLevel::Quiet)

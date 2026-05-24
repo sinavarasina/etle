@@ -3,11 +3,13 @@ use std::{fs, path::PathBuf};
 use etle::{
     crypto::hash::{FileId, hash_file},
     network::{
-        NetworkError, bind_listener, client_hello_handshake, client_key_exchange, connect_peer,
-        download_file_from_peer, serve_file_to_one_peer, server_hello_handshake,
-        server_key_exchange,
+        error::NetworkError,
+        handshake::{client_hello_handshake, server_hello_handshake},
+        key_exchange::{client_key_exchange, server_key_exchange},
+        tcp::{bind_listener, connect_peer},
+        transfer::{download, serve},
     },
-    protocol::{WireMessage, send_message},
+    protocol::{codec::send, message::WireMessage},
 };
 
 fn temp_file_name(name: &str) -> PathBuf {
@@ -56,7 +58,7 @@ async fn server_rejects_non_hello_handshake_message() {
     });
 
     let mut client = connect_peer(addr).await.unwrap();
-    send_message(&mut client, &WireMessage::RequestManifest)
+    send(&mut client, &WireMessage::RequestManifest)
         .await
         .unwrap();
 
@@ -96,7 +98,7 @@ async fn server_rejects_non_key_exchange_message() {
     });
 
     let mut client = connect_peer(addr).await.unwrap();
-    send_message(
+    send(
         &mut client,
         &WireMessage::Hello {
             peer_id: "not-a-key-exchange".to_string(),
@@ -127,14 +129,12 @@ async fn encrypted_file_transfer_over_tcp_reconstructs_output() {
     let server_input = input.clone();
 
     let server = tokio::spawn(async move {
-        serve_file_to_one_peer(listener, server_input, 8, "seeder")
+        serve::file_once(listener, server_input, 8, "seeder")
             .await
             .unwrap();
     });
 
-    let manifest = download_file_from_peer(addr, &output, "peer")
-        .await
-        .unwrap();
+    let manifest = download::from_peer(addr, &output, "peer").await.unwrap();
     server.await.unwrap();
 
     assert_eq!(hash_file(&input).unwrap(), hash_file(&output).unwrap());
