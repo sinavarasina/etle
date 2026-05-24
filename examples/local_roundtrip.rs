@@ -29,19 +29,29 @@ fn main() -> anyhow::Result<()> {
 
     let seeder_session_key =
         derive_session_key_with_transcript(seeder_shared, peer_public, seeder_public);
-    let peer_session_key = derive_session_key_with_transcript(peer_shared, peer_public, seeder_public);
+    let peer_session_key =
+        derive_session_key_with_transcript(peer_shared, peer_public, seeder_public);
     anyhow::ensure!(
         seeder_session_key == peer_session_key,
         "session keys do not match"
     );
 
-    verify_psk_proofs(&psk, &seeder_session_key, &peer_session_key, peer_public, seeder_public)?;
+    verify_psk_proofs(
+        &psk,
+        &seeder_session_key,
+        &peer_session_key,
+        peer_public,
+        seeder_public,
+    )?;
 
     let file_id = hash_file(&input)?;
     let file_key = generate_file_key();
     let wrapped_file_key = wrap_file_key(&seeder_session_key, file_id, &file_key)?;
     let peer_file_key = unwrap_file_key(&peer_session_key, file_id, &wrapped_file_key)?;
-    anyhow::ensure!(peer_file_key == file_key, "unwrapped file key does not match");
+    anyhow::ensure!(
+        peer_file_key == file_key,
+        "unwrapped file key does not match"
+    );
 
     let encrypted = encrypt_file(&input, &file_key, DEFAULT_CHUNK_SIZE)?;
     let output_path = default_output_path(&input);

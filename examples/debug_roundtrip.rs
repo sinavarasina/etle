@@ -101,7 +101,10 @@ fn main() -> anyhow::Result<()> {
     let file_key = generate_file_key();
     let wrapped = wrap_file_key(&seeder_session_key, file_id, &file_key)?;
     let peer_file_key = unwrap_file_key(&peer_session_key, file_id, &wrapped)?;
-    anyhow::ensure!(peer_file_key == file_key, "unwrapped file key does not match");
+    anyhow::ensure!(
+        peer_file_key == file_key,
+        "unwrapped file key does not match"
+    );
 
     let encrypted = encrypt_file(&input, &file_key, DEFAULT_CHUNK_SIZE)?;
     write_debug_workspace(&encrypted, &workspace)?;
