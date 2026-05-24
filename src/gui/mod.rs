@@ -15,5 +15,3 @@ pub fn run() {
     let app = RelmApp::new(APP_ID);
     app.run::<EtleGui>(GuiInit::default());
 }
-
-

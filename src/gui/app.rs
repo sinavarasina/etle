@@ -1194,14 +1194,14 @@ impl EtleGui {
             .job_id
             .clone()
             .unwrap_or_else(|| format!("{}:{label}", kind.label()));
-        let completed = progress.total_chunks > 0 && progress.completed_chunks >= progress.total_chunks;
-        let status = if progress.task.contains("completed")
-            || (kind == TransferKind::Seed && completed)
-        {
-            TransferStatus::Done
-        } else {
-            TransferStatus::Running
-        };
+        let completed =
+            progress.total_chunks > 0 && progress.completed_chunks >= progress.total_chunks;
+        let status =
+            if progress.task.contains("completed") || (kind == TransferKind::Seed && completed) {
+                TransferStatus::Done
+            } else {
+                TransferStatus::Running
+            };
         let detail = friendly_task_detail(&progress.task);
         let seq = self.bump_seq();
         let transfer = GuiTransfer {
@@ -1438,5 +1438,3 @@ fn transfer_hidden_keys(transfer: &GuiTransfer) -> Vec<String> {
     }
     keys
 }
-
-

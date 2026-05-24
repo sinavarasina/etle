@@ -704,5 +704,3 @@ fn share_percent(share: &IpcShareSummary) -> f64 {
 fn _debug_bytes(bytes: u64) -> String {
     human_bytes(bytes)
 }
-
-

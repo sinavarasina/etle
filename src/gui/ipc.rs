@@ -83,5 +83,3 @@ where
         .expect("create GUI IPC runtime")
         .block_on(future)
 }
-
-

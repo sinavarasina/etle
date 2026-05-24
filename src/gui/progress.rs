@@ -90,5 +90,3 @@ fn extract_debug_u64(value: &str, field: &str) -> Option<u64> {
         digits.parse().ok()
     }
 }
-
-
