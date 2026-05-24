@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
     time::Duration,
@@ -69,8 +69,10 @@ enum DiscoveryMessage {
     Response {
         magic: String,
         share_id: ShareId,
+        listen_addr: SocketAddr,
         listen_port: u16,
         peer_id: String,
+        instance_id: String,
         name: String,
     },
 }
@@ -98,6 +100,7 @@ pub async fn serve_discovery_forever_with_options(
 ) -> std::io::Result<()> {
     let library_root = library_root.as_ref().to_path_buf();
     let peer_id = peer_id.into();
+    let instance_id = discovery_instance_id(&library_root, p2p_listen, &peer_id);
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), options.port);
     let socket = UdpSocket::bind(bind_addr).await?;
     socket.set_broadcast(true)?;
@@ -127,8 +130,10 @@ pub async fn serve_discovery_forever_with_options(
         let response = DiscoveryMessage::Response {
             magic: DISCOVERY_MAGIC.to_string(),
             share_id,
+            listen_addr: advertised_p2p_addr(p2p_listen, source.ip()),
             listen_port: p2p_listen.port(),
             peer_id: peer_id.clone(),
+            instance_id: instance_id.clone(),
             name,
         };
 
@@ -168,6 +173,7 @@ pub async fn discover_peers_for_share_with_options(
     }
 
     let deadline = time::Instant::now() + options.timeout;
+    let mut peers_by_instance = BTreeMap::<String, SocketAddr>::new();
     let mut peers = BTreeSet::new();
     let mut buffer = [0_u8; MAX_DISCOVERY_PACKET_SIZE];
 
@@ -186,7 +192,9 @@ pub async fn discover_peers_for_share_with_options(
         let Ok(DiscoveryMessage::Response {
             magic,
             share_id: response_share_id,
+            listen_addr,
             listen_port,
+            instance_id,
             ..
         }) = decode_message(&buffer[..read])
         else {
@@ -197,10 +205,54 @@ pub async fn discover_peers_for_share_with_options(
             continue;
         }
 
-        peers.insert(SocketAddr::new(source.ip(), listen_port));
+        let peer_addr = if listen_addr.ip().is_unspecified() {
+            SocketAddr::new(source.ip(), listen_port)
+        } else {
+            listen_addr
+        };
+
+        if instance_id.is_empty() {
+            peers.insert(peer_addr);
+        } else {
+            insert_preferred_peer(&mut peers_by_instance, instance_id, peer_addr);
+        }
     }
 
+    peers.extend(peers_by_instance.into_values());
     Ok(peers.into_iter().collect())
+}
+
+fn advertised_p2p_addr(p2p_listen: SocketAddr, source_ip: IpAddr) -> SocketAddr {
+    if p2p_listen.ip().is_unspecified() {
+        SocketAddr::new(source_ip, p2p_listen.port())
+    } else {
+        p2p_listen
+    }
+}
+
+fn insert_preferred_peer(
+    peers: &mut BTreeMap<String, SocketAddr>,
+    instance_id: String,
+    candidate: SocketAddr,
+) {
+    let Some(existing) = peers.get_mut(&instance_id) else {
+        peers.insert(instance_id, candidate);
+        return;
+    };
+
+    if candidate.ip().is_loopback() && !existing.ip().is_loopback() {
+        *existing = candidate;
+    }
+}
+
+fn discovery_instance_id(library_root: &Path, p2p_listen: SocketAddr, peer_id: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(DISCOVERY_MAGIC.as_bytes());
+    hasher.update(peer_id.as_bytes());
+    hasher.update(library_root.to_string_lossy().as_bytes());
+    hasher.update(p2p_listen.to_string().as_bytes());
+    hasher.update(std::process::id().to_string().as_bytes());
+    hasher.finalize().to_hex().to_string()
 }
 
 #[must_use]
@@ -317,5 +369,42 @@ mod tests {
             ),
             Some(Ipv4Addr::new(192, 168, 1, 255))
         );
+    }
+
+    #[test]
+    fn advertised_addr_uses_explicit_loopback_listen_addr() {
+        let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7000);
+        let source = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+        assert_eq!(advertised_p2p_addr(listen, source), listen);
+    }
+
+    #[test]
+    fn advertised_addr_uses_source_ip_for_unspecified_listen_addr() {
+        let listen = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7000);
+        let source = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+        assert_eq!(
+            advertised_p2p_addr(listen, source),
+            SocketAddr::new(source, 7000)
+        );
+    }
+
+    #[test]
+    fn preferred_peer_deduplicates_same_discovery_instance() {
+        let mut peers = BTreeMap::new();
+        insert_preferred_peer(
+            &mut peers,
+            "same".to_string(),
+            "192.168.1.20:7000".parse().unwrap(),
+        );
+        insert_preferred_peer(
+            &mut peers,
+            "same".to_string(),
+            "127.0.0.1:7000".parse().unwrap(),
+        );
+
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers["same"], "127.0.0.1:7000".parse().unwrap());
     }
 }

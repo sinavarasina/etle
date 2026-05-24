@@ -1300,6 +1300,23 @@ pub async fn download_file_from_peers_parallel_with_options(
         });
     }
 
+    if connected_peers.len() == 1 {
+        let peer_addr = connected_peers[0].peer_addr;
+        if options.log_level.is_normal() {
+            println!(
+                "[peer] only one compatible peer prepared; using sequential windowed download from {peer_addr}"
+            );
+        }
+
+        drop(connected_peers);
+        return download_file_from_peers_with_options(
+            [peer_addr],
+            output_path,
+            options.with_resume(true),
+        )
+        .await;
+    }
+
     let descriptor = descriptor_from_manifest(&manifest);
     let output_state_dir = output_parent_dir(output_path);
     let mut library_state = initialize_download_library_state(
