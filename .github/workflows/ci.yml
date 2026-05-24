@@ -37,12 +37,17 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
-    name: clippy
+    name: clippy (all features, linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install GTK4 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgtk-4-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -67,10 +72,15 @@ jobs:
   feature-checks:
     name: feature checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install GTK4 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgtk-4-dev
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -90,14 +100,17 @@ jobs:
       - name: Check library without default features
         run: cargo check --locked --lib --no-default-features
 
-      - name: Check default features
+      - name: Check default CLI targets
         run: cargo check --locked --all-targets
 
-      - name: Check all features
+      - name: Check GUI-only binary
+        run: cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+
+      - name: Check all targets and features
         run: cargo check --locked --all-targets --all-features
 
-  test:
-    name: test (${{ matrix.os }})
+  test-core:
+    name: core test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -126,14 +139,107 @@ jobs:
             ${{ runner.os }}-cargo-test-
             ${{ runner.os }}-cargo-
 
-      - name: Check all targets and features
-        run: cargo check --locked --all-targets --all-features
+      - name: Check default targets
+        run: cargo check --locked --all-targets
 
-      - name: Run tests
-        run: cargo test --locked --all-targets --all-features
+      - name: Run default tests
+        run: cargo test --locked --all-targets
 
-      - name: Build release binaries
-        run: cargo build --locked --release --bins --all-features
+      - name: Build release CLI binaries
+        run: cargo build --locked --release --bins
+
+  gui-linux:
+    name: GUI build/test (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GTK4 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgtk-4-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo registry and git sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-gui-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gui-
+            ${{ runner.os }}-cargo-
+
+      - name: Check GUI-only binary
+        run: cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+
+      - name: Clippy GUI-only binary
+        run: cargo clippy --locked --no-default-features --features gui-relm4 --bin etle-gui -- -D warnings
+
+      - name: Build GUI release binary
+        run: cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
+
+  gui-macos:
+    name: GUI check (macos)
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install GTK4 build dependencies
+        run: brew install gtk4 pkg-config
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and git sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-gui-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-gui-
+            ${{ runner.os }}-cargo-
+
+      - name: Check GUI-only binary
+        run: cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+
+  gui-windows:
+    name: GUI check (windows/msys2)
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up MSYS2 GTK4 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gtk4
+
+      - name: Check GUI-only binary
+        shell: msys2 {0}
+        run: cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
 
   ci-success:
     name: CI success
@@ -142,7 +248,10 @@ jobs:
       - fmt
       - clippy
       - feature-checks
-      - test
+      - test-core
+      - gui-linux
+      - gui-macos
+      - gui-windows
     if: always()
     steps:
       - name: Verify required jobs
@@ -150,4 +259,7 @@ jobs:
           if [[ "${{ needs.fmt.result }}" != "success" ]]; then exit 1; fi
           if [[ "${{ needs.clippy.result }}" != "success" ]]; then exit 1; fi
           if [[ "${{ needs.feature-checks.result }}" != "success" ]]; then exit 1; fi
-          if [[ "${{ needs.test.result }}" != "success" ]]; then exit 1; fi
+          if [[ "${{ needs.test-core.result }}" != "success" ]]; then exit 1; fi
+          if [[ "${{ needs.gui-linux.result }}" != "success" ]]; then exit 1; fi
+          if [[ "${{ needs.gui-macos.result }}" != "success" ]]; then exit 1; fi
+          if [[ "${{ needs.gui-windows.result }}" != "success" ]]; then exit 1; fi

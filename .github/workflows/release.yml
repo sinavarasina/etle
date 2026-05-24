@@ -33,8 +33,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  build:
-    name: package (${{ matrix.os }})
+  build-cli:
+    name: package CLI/daemon (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -44,9 +44,10 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -54,27 +55,28 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo registry and git sources
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-release-cli-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-release-cli-
             ${{ runner.os }}-cargo-
 
-      - name: Build release binaries
-        run: cargo build --locked --release --bins --all-features
+      - name: Build release CLI binaries
+        run: cargo build --locked --release --bins
 
-      - name: Package binaries
+      - name: Package CLI binaries
         shell: bash
         run: |
           set -euo pipefail
+
           tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           host="$(rustc -vV | sed -n 's/^host: //p')"
-          asset="etle-${tag}-${host}"
+          asset="etle-${tag}-${host}-cli"
           exe=""
           archive="${asset}.tar.gz"
 
@@ -96,31 +98,234 @@ jobs:
             tar -czf "${archive}" -C dist "${asset}"
           fi
 
-          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
-
-      - name: Upload packaged artifact
-        uses: actions/upload-artifact@v7
+      - name: Upload packaged CLI artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: release-${{ runner.os }}
-          path: etle-*.tar.gz
-          if-no-files-found: ignore
+          name: release-cli-${{ runner.os }}
+          path: |
+            etle-*-cli.tar.gz
+            etle-*-cli.zip
+          if-no-files-found: error
 
-      - name: Upload packaged artifact on Windows
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v7
+  build-gui-linux-macos:
+    name: package GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          name: release-${{ runner.os }}
-          path: etle-*.zip
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install GTK4 build dependencies on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgtk-4-dev
+
+      - name: Install GTK4 build dependencies on macOS
+        if: runner.os == 'macOS'
+        run: brew install gtk4 pkg-config
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and git sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-release-gui-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-gui-
+            ${{ runner.os }}-cargo-
+
+      - name: Build release GUI binary
+        run: cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
+
+      - name: Package GUI binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          asset="etle-${tag}-${host}-gui"
+          archive="${asset}.tar.gz"
+
+          mkdir -p "dist/${asset}"
+          cp "target/release/etle-gui" "dist/${asset}/"
+
+          cat > "dist/${asset}/GUI-NOTES.md" <<'NOTES'
+          # ETLE GUI notes
+
+          This package contains the `etle-gui` binary.
+
+          The GUI is a GTK4 application. On Linux/macOS, install a compatible GTK4
+          runtime with your package manager when needed.
+          NOTES
+
+          if [[ -f README.md ]]; then cp README.md "dist/${asset}/"; fi
+          if compgen -G "LICENSE*" > /dev/null; then cp LICENSE* "dist/${asset}/"; fi
+
+          tar -czf "${archive}" -C dist "${asset}"
+
+      - name: Upload packaged GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-${{ runner.os }}
+          path: etle-*-gui.tar.gz
+          if-no-files-found: error
+
+  build-gui-windows:
+    name: package GUI (Windows UCRT64 bundled)
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install MSYS2 GTK4 runtime/build dependencies
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gtk4
+            zip
+
+      - name: Cache Cargo registry and git sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: Windows-cargo-release-gui-ucrt64-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            Windows-cargo-release-gui-ucrt64-
+            Windows-cargo-
+
+      - name: Build release GUI binary
+        env:
+          PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig
+          PATH: /ucrt64/bin:${{ env.PATH }}
+        run: |
+          set -euo pipefail
+          cargo build \
+            --locked \
+            --release \
+            --target x86_64-pc-windows-gnu \
+            --no-default-features \
+            --features gui-relm4 \
+            --bin etle-gui
+
+      - name: Package Windows GUI with GTK DLL runtime
+        env:
+          PATH: /ucrt64/bin:${{ env.PATH }}
+        run: |
+          set -euo pipefail
+
+          tag="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          asset="etle-${tag}-x86_64-pc-windows-gnu-gui"
+          exe_path="target/x86_64-pc-windows-gnu/release/etle-gui.exe"
+
+          mkdir -p "dist/${asset}"
+          cp "${exe_path}" "dist/${asset}/"
+
+          # Copy DLL dependencies reported by ldd from the MSYS2 UCRT64 runtime.
+          # This catches GTK, GLib, Pango, Cairo, Harfbuzz, Fontconfig, Freetype,
+          # image libraries, and MinGW/UCRT support DLLs used by etle-gui.exe.
+          ldd "${exe_path}" \
+            | awk '
+                {
+                  for (i = 1; i <= NF; i++) {
+                    if ($i ~ /^\/ucrt64\/bin\/.*\.dll$/) {
+                      print $i
+                    }
+                  }
+                }
+              ' \
+            | sort -u \
+            | while read -r dll; do
+                cp -v "${dll}" "dist/${asset}/"
+              done
+
+          # Runtime data/plugins commonly needed by GTK/GIO/GDK-Pixbuf/Fontconfig.
+          mkdir -p "dist/${asset}/share/glib-2.0" "dist/${asset}/share/icons" "dist/${asset}/share" "dist/${asset}/lib" "dist/${asset}/etc"
+
+          cp -a /ucrt64/share/glib-2.0/schemas "dist/${asset}/share/glib-2.0/" || true
+          cp -a /ucrt64/share/icons/Adwaita "dist/${asset}/share/icons/" || true
+          cp -a /ucrt64/share/icons/hicolor "dist/${asset}/share/icons/" || true
+          cp -a /ucrt64/share/fontconfig "dist/${asset}/share/" || true
+          cp -a /ucrt64/lib/gdk-pixbuf-2.0 "dist/${asset}/lib/" || true
+          cp -a /ucrt64/lib/gtk-4.0 "dist/${asset}/lib/" || true
+          cp -a /ucrt64/etc/fonts "dist/${asset}/etc/" || true
+
+          cat > "dist/${asset}/GUI-WINDOWS-NOTES.md" <<'NOTES'
+          # ETLE GUI for Windows
+
+          This package bundles `etle-gui.exe` with the MSYS2 UCRT64 GTK4 runtime
+          DLLs and common GTK runtime data directories.
+
+          Run:
+              etle-gui.exe
+
+          Notes:
+          - Keep the DLL files and the `share/`, `lib/`, and `etc/` directories
+            next to `etle-gui.exe`.
+          - This is a portable zip package, not an installer.
+          - If antivirus/quarantine removes DLLs, extract again.
+          NOTES
+
+          if [[ -f README.md ]]; then cp README.md "dist/${asset}/"; fi
+          if compgen -G "LICENSE*" > /dev/null; then cp LICENSE* "dist/${asset}/"; fi
+
+          (cd dist && zip -r "../${asset}.zip" "${asset}")
+
+      - name: Upload packaged Windows GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gui-Windows
+          path: etle-*-windows-gnu-gui.zip
           if-no-files-found: error
 
   publish:
     name: publish GitHub Release
-    needs: build
+    needs:
+      - build-cli
+      - build-gui-linux-macos
+      - build-gui-windows
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
       - name: Download packaged artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
