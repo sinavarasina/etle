@@ -99,7 +99,7 @@ jobs:
           echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload packaged artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ runner.os }}
           path: etle-*.tar.gz
@@ -107,7 +107,7 @@ jobs:
 
       - name: Upload packaged artifact on Windows
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ runner.os }}
           path: etle-*.zip
