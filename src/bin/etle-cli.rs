@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand};
 
 #[cfg(feature = "cli")]
 use etle::{
+    build_info,
     config::load,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
@@ -42,6 +43,9 @@ struct Cli {
 #[cfg(feature = "cli")]
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Print detailed build and version information.
+    Version,
+
     /// Ask etled to add a file into the local library and make it seedable.
     Seed {
         /// File to add to the daemon library.
@@ -131,7 +135,18 @@ enum DaemonCommand {
 #[cfg(feature = "cli")]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if build_info::args_request_version(std::env::args().skip(1)) {
+        build_info::print("etle-cli");
+        return Ok(());
+    }
+
     let cli = Cli::parse();
+
+    if matches!(cli.command, Command::Version) {
+        build_info::print("etle-cli");
+        return Ok(());
+    }
+
     let config = load::load()?;
     let library_root = config.library_root().unwrap_or_else(default_library_root);
     let socket_path = cli
@@ -154,6 +169,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let command = match cli.command {
+        Command::Version => {
+            build_info::print("etle-cli");
+            return Ok(());
+        }
         Command::Seed { file, chunk_size } => IpcCommand::SeedFile {
             input: file,
             chunk_size,
@@ -355,5 +374,10 @@ fn print_event(event: IpcEvent) {
 
 #[cfg(not(feature = "cli"))]
 fn main() {
+    if etle::build_info::args_request_version(std::env::args().skip(1)) {
+        etle::build_info::print("etle-cli");
+        return;
+    }
+
     eprintln!("etle-cli requires the `cli` feature");
 }

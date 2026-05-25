@@ -6,6 +6,7 @@ use std::{
 use clap::{Parser, Subcommand};
 
 use etle::{
+    build_info,
     config::load,
     crypto::key_exchange::AuthPsk,
     discovery::{options::DiscoveryOptions, server},
@@ -37,6 +38,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Print detailed build and version information.
+    Version,
+
     /// Serve any local library share requested by peers over one P2P port.
     Serve {
         /// TCP listen address for the P2P transfer server. Defaults to 0.0.0.0:7000 so LAN peers can connect.
@@ -80,8 +84,12 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    if build_info::args_request_version(std::env::args().skip(1)) {
+        build_info::print("etled");
+        return Ok(());
+    }
+
     let cli = Cli::parse();
-    let config = load::load()?;
     let log_level = if cli.verbose {
         TransferLogLevel::Verbose
     } else {
@@ -89,6 +97,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     match cli.command {
+        Command::Version => {
+            build_info::print("etled");
+        }
         Command::Serve {
             listen,
             peer_id,
@@ -100,6 +111,8 @@ async fn main() -> anyhow::Result<()> {
             auth_psk,
             no_discovery,
         } => {
+            let config = load::load()?;
+
             let library_root = library_root
                 .or_else(|| config.library_root())
                 .unwrap_or_else(default_library_root);
