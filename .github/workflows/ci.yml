@@ -39,10 +39,12 @@ jobs:
   clippy:
     name: clippy (all features, linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install GTK4 build dependencies
         run: |
@@ -72,10 +74,12 @@ jobs:
   feature-checks:
     name: feature checks
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install GTK4 build dependencies
         run: |
@@ -112,7 +116,7 @@ jobs:
   test-core:
     name: core test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +127,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -145,16 +151,31 @@ jobs:
       - name: Run default tests
         run: cargo test --locked --all-targets
 
-      - name: Build release CLI binaries
-        run: cargo build --locked --release --bins
+      - name: Build release CLI and daemon binaries
+        run: cargo build --locked --release --bin etle-cli --bin etled
+
+      - name: Check release CLI and daemon build info
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          exe=""
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            exe=".exe"
+          fi
+
+          "target/release/etle-cli${exe}" --version
+          "target/release/etled${exe}" --version
 
   gui-linux:
     name: GUI build/test (linux)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install GTK4 build dependencies
         run: |
@@ -187,13 +208,18 @@ jobs:
       - name: Build GUI release binary
         run: cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
 
+      - name: Check GUI build info
+        run: target/release/etle-gui --version
+
   gui-macos:
-    name: GUI check (macos)
+    name: GUI build/test (macos)
     runs-on: macos-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install GTK4 build dependencies
         run: brew install gtk4 pkg-config
@@ -216,13 +242,26 @@ jobs:
       - name: Check GUI-only binary
         run: cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
 
+      - name: Build GUI release binary
+        run: cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
+
+      - name: Check GUI build info
+        run: target/release/etle-gui --version
+
   gui-windows:
-    name: GUI check (windows/msys2)
+    name: GUI build/test (windows/msys2)
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up MSYS2 GTK4 toolchain
         uses: msys2/setup-msys2@v2
@@ -238,8 +277,23 @@ jobs:
             mingw-w64-ucrt-x86_64-gtk4
 
       - name: Check GUI-only binary
-        shell: msys2 {0}
-        run: cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+        env:
+          PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:${PATH}"
+          cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+
+      - name: Build GUI release binary
+        env:
+          PKG_CONFIG_PATH: /ucrt64/lib/pkgconfig
+        run: |
+          set -euo pipefail
+          export PATH="/ucrt64/bin:${PATH}"
+          cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
+
+      - name: Check GUI build info
+        run: target/release/etle-gui.exe --version
 
   ci-success:
     name: CI success
