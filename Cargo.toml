@@ -56,3 +56,15 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+[[test]]
+name = "mitm_test"
+path = "tests/mitm_test.rs"
+
+[[test]]
+name = "timing_test"
+path = "tests/timing_test.rs"
+
+[[test]]
+name = "fuzz_simulation_test"
+path = "tests/fuzz_simulation_test.rs"
