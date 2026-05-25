@@ -123,21 +123,21 @@ fn is_discoverable_share(share: &LocalShareSummary) -> bool {
 
     if !matches!(
         share.mode(),
-        Some(ShareMode::Seeding | ShareMode::Completed)
+        Some(ShareMode::Seeding | ShareMode::Completed | ShareMode::Downloading)
     ) {
         return false;
     }
 
-    let total_chunks = share.total_chunks();
-    if total_chunks == 0 || share.completed_chunks() != total_chunks {
+    if share.total_chunks() == 0 {
         return false;
     }
 
-    share
-        .descriptor
-        .chunks
-        .iter()
-        .all(|chunk| share.paths.chunk_path(chunk.index).is_file())
+    share.completed_chunks() > 0
+        || share
+            .descriptor
+            .chunks
+            .iter()
+            .any(|chunk| share.paths.chunk_path(chunk.index).is_file())
 }
 
 pub(super) fn encode_message(message: &DiscoveryMessage) -> std::io::Result<Vec<u8>> {
