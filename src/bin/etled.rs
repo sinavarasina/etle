@@ -131,8 +131,9 @@ async fn main() -> anyhow::Result<()> {
                 println!("[daemon] discovery udp: 0.0.0.0:{discovery_port}");
                 println!("[daemon] discovery multicast: {discovery_multicast}");
                 let discovery_library_root = library_root.clone();
-                let discovery_options =
-                    DiscoveryOptions::new(discovery_port).with_multicast(discovery_multicast);
+                let discovery_options = DiscoveryOptions::new(discovery_port)
+                    .with_multicast(discovery_multicast)
+                    .with_verbose(log_level.is_verbose());
                 Some(tokio::spawn(async move {
                     if let Err(error) = server::serve_with(
                         discovery_library_root,

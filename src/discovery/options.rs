@@ -8,6 +8,7 @@ pub struct DiscoveryOptions {
     pub port: u16,
     pub timeout: Duration,
     pub multicast: Option<Ipv4Addr>,
+    pub verbose: bool,
 }
 
 impl DiscoveryOptions {
@@ -17,6 +18,7 @@ impl DiscoveryOptions {
             port,
             timeout: Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS),
             multicast: Some(DEFAULT_DISCOVERY_MULTICAST_ADDR),
+            verbose: false,
         }
     }
 
@@ -35,6 +37,12 @@ impl DiscoveryOptions {
     #[must_use]
     pub const fn without_multicast(mut self) -> Self {
         self.multicast = None;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_verbose(mut self, verbose: bool) -> Self {
+        self.verbose = verbose;
         self
     }
 }
