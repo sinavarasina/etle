@@ -117,7 +117,7 @@ jobs:
           fi
 
       - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-cli-${{ runner.os }}
           path: |
@@ -205,7 +205,7 @@ jobs:
           tar -czf "${archive}" -C dist "${asset}"
 
       - name: Upload packaged GUI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-gui-${{ runner.os }}
           path: etle-*-gui.tar.gz
@@ -340,7 +340,7 @@ jobs:
           (cd dist && zip -r "../${asset}.zip" "${asset}")
 
       - name: Upload packaged Windows GUI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-gui-Windows
           path: etle-*-windows*-gui.zip
