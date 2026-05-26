@@ -30,13 +30,13 @@ fn sample_manifest() -> Manifest {
     }
 }
 
-fn assert_bincode_roundtrip(message: WireMessage) {
-    let encoded = bincode::serde::encode_to_vec(&message, bincode::config::standard()).unwrap();
+fn assert_binary_codec_roundtrip(message: WireMessage) {
+    let config = bincode_next::config::standard();
+    let encoded = bincode_next::serde::encode_to_vec(&message, config).unwrap();
     let (decoded, bytes_read): (WireMessage, usize) =
-        bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
+        bincode_next::serde::decode_from_slice(&encoded, config).unwrap();
 
     assert_eq!(bytes_read, encoded.len());
-
     assert_eq!(decoded, message);
 }
 
@@ -65,7 +65,7 @@ fn wire_messages_serialize_roundtrip() {
     ];
 
     for message in messages {
-        assert_bincode_roundtrip(message);
+        assert_binary_codec_roundtrip(message);
     }
 }
 

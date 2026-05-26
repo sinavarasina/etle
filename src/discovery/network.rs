@@ -141,18 +141,18 @@ fn is_discoverable_share(share: &LocalShareSummary) -> bool {
 }
 
 pub(super) fn encode_message(message: &DiscoveryMessage) -> std::io::Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(message, bincode::config::standard())
+    bincode_next::serde::encode_to_vec(message, bincode_next::config::standard())
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 pub(super) fn decode_message(
     bytes: &[u8],
-) -> Result<DiscoveryMessage, bincode::error::DecodeError> {
+) -> Result<DiscoveryMessage, bincode_next::error::DecodeError> {
     let (message, bytes_read): (DiscoveryMessage, usize) =
-        bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+        bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
 
     if bytes_read != bytes.len() {
-        return Err(bincode::error::DecodeError::OtherString(format!(
+        return Err(bincode_next::error::DecodeError::OtherString(format!(
             "discovery message has trailing bytes: decoded {bytes_read} of {} bytes",
             bytes.len()
         )));

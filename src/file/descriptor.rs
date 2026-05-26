@@ -130,16 +130,16 @@ impl EtleDescriptor {
         }
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode::error::EncodeError> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
+    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
+        bincode_next::serde::encode_to_vec(self, bincode_next::config::standard())
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
         let (descriptor, bytes_read): (Self, usize) =
-            bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+            bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
 
         if bytes_read != bytes.len() {
-            return Err(bincode::error::DecodeError::OtherString(format!(
+            return Err(bincode_next::error::DecodeError::OtherString(format!(
                 "descriptor has trailing bytes: decoded {bytes_read} of {} bytes",
                 bytes.len()
             )));

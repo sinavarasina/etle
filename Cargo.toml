@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0.102"
-bincode = { version = "2.0.1", features = ["serde"] }
+bincode-next = { version = "3.0.0-rc.15", features = ["serde"] }
 blake3 = "1.8.5"
 chacha20poly1305 = "0.10.1"
 clap = { version = "4.6.1", features = ["derive"], optional = true }

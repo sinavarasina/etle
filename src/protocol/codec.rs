@@ -34,7 +34,7 @@ where
         return send_raw_chunk_frame(writer, *index, data).await;
     }
 
-    let payload = bincode::serde::encode_to_vec(message, bincode::config::standard())?;
+    let payload = bincode_next::serde::encode_to_vec(message, bincode_next::config::standard())?;
     validate_frame_len(payload.len())?;
 
     writer
@@ -58,7 +58,7 @@ where
         return receive_raw_chunk_frame_after_tag(reader, len).await;
     }
 
-    receive_bincode_frame_after_first_byte(reader, len, first[0]).await
+    receive_encoded_frame_after_first_byte(reader, len, first[0]).await
 }
 
 pub async fn receive_chunk_to_file<R>(
@@ -73,7 +73,7 @@ where
     reader.read_exact(&mut first).await?;
 
     if first[0] != RAW_CHUNK_FRAME_TAG {
-        return receive_bincode_frame_after_first_byte(reader, len, first[0])
+        return receive_encoded_frame_after_first_byte(reader, len, first[0])
             .await
             .map(ReceivedChunkFrame::Message);
     }
@@ -229,7 +229,7 @@ where
     Ok(WireMessage::Chunk { index, data })
 }
 
-async fn receive_bincode_frame_after_first_byte<R>(
+async fn receive_encoded_frame_after_first_byte<R>(
     reader: &mut R,
     frame_len: usize,
     first_byte: u8,
@@ -245,7 +245,7 @@ where
     }
 
     let (message, bytes_read): (WireMessage, usize) =
-        bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
+        bincode_next::serde::decode_from_slice(&payload, bincode_next::config::standard())?;
 
     if bytes_read != payload.len() {
         return Err(ProtocolError::TrailingBytes {

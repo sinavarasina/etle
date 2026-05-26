@@ -41,16 +41,16 @@ impl EtleSecret {
         Self { share_id, file_key }
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode::error::EncodeError> {
-        bincode::serde::encode_to_vec(self, bincode::config::standard())
+    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
+        bincode_next::serde::encode_to_vec(self, bincode_next::config::standard())
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
         let (secret, bytes_read): (Self, usize) =
-            bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+            bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
 
         if bytes_read != bytes.len() {
-            return Err(bincode::error::DecodeError::OtherString(format!(
+            return Err(bincode_next::error::DecodeError::OtherString(format!(
                 "secret has trailing bytes: decoded {bytes_read} of {} bytes",
                 bytes.len()
             )));
@@ -100,11 +100,11 @@ impl DownloadProgress {
         self.completed_chunks.len() == total_chunks
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
         super::codec::encode_progress(self)
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
         super::codec::decode_progress(bytes)
     }
 }
@@ -150,11 +150,11 @@ impl ShareState {
         )
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
         super::codec::encode_state(self)
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode::error::DecodeError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
         super::codec::decode_state(bytes)
     }
 }

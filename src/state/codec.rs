@@ -58,20 +58,22 @@ impl CompactShareState {
 
 pub(super) fn encode_progress(
     progress: &DownloadProgress,
-) -> Result<Vec<u8>, bincode::error::EncodeError> {
+) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
     encode_with_magic(
         COMPACT_PROGRESS_MAGIC,
         &CompactDownloadProgress::from_progress(progress),
     )
 }
 
-pub(super) fn encode_state(state: &ShareState) -> Result<Vec<u8>, bincode::error::EncodeError> {
+pub(super) fn encode_state(
+    state: &ShareState,
+) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
     encode_with_magic(COMPACT_STATE_MAGIC, &CompactShareState::from_state(state))
 }
 
 pub(super) fn decode_progress(
     bytes: &[u8],
-) -> Result<DownloadProgress, bincode::error::DecodeError> {
+) -> Result<DownloadProgress, bincode_next::error::DecodeError> {
     if let Some(payload) = bytes.strip_prefix(COMPACT_PROGRESS_MAGIC) {
         let progress: CompactDownloadProgress = decode_exact(payload, "compact progress")?;
         return Ok(progress.into_progress());
@@ -80,7 +82,7 @@ pub(super) fn decode_progress(
     decode_exact(bytes, "legacy progress")
 }
 
-pub(super) fn decode_state(bytes: &[u8]) -> Result<ShareState, bincode::error::DecodeError> {
+pub(super) fn decode_state(bytes: &[u8]) -> Result<ShareState, bincode_next::error::DecodeError> {
     if let Some(payload) = bytes.strip_prefix(COMPACT_STATE_MAGIC) {
         let state: CompactShareState = decode_exact(payload, "compact state")?;
         return Ok(state.into_state());
@@ -89,15 +91,15 @@ pub(super) fn decode_state(bytes: &[u8]) -> Result<ShareState, bincode::error::D
     decode_exact(bytes, "legacy state")
 }
 
-fn decode_exact<T>(bytes: &[u8], label: &str) -> Result<T, bincode::error::DecodeError>
+fn decode_exact<T>(bytes: &[u8], label: &str) -> Result<T, bincode_next::error::DecodeError>
 where
     T: DeserializeOwned,
 {
     let (value, bytes_read): (T, usize) =
-        bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+        bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
 
     if bytes_read != bytes.len() {
-        return Err(bincode::error::DecodeError::OtherString(format!(
+        return Err(bincode_next::error::DecodeError::OtherString(format!(
             "{label} has trailing bytes: decoded {bytes_read} of {} bytes",
             bytes.len()
         )));
@@ -109,8 +111,8 @@ where
 fn encode_with_magic<T: Serialize>(
     magic: &[u8; 8],
     value: &T,
-) -> Result<Vec<u8>, bincode::error::EncodeError> {
-    let payload = bincode::serde::encode_to_vec(value, bincode::config::standard())?;
+) -> Result<Vec<u8>, bincode_next::error::EncodeError> {
+    let payload = bincode_next::serde::encode_to_vec(value, bincode_next::config::standard())?;
     let mut output = Vec::with_capacity(magic.len() + payload.len());
     output.extend_from_slice(magic);
     output.extend_from_slice(&payload);

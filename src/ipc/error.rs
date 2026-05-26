@@ -6,10 +6,10 @@ pub enum IpcError {
     Io(#[from] std::io::Error),
 
     #[error("serialization encode error: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
+    Encode(#[from] bincode_next::error::EncodeError),
 
     #[error("serialization decode error: {0}")]
-    Decode(#[from] bincode::error::DecodeError),
+    Decode(#[from] bincode_next::error::DecodeError),
 
     #[error("empty IPC frame")]
     EmptyFrame,

@@ -11,10 +11,10 @@ pub enum FileError {
     Crypto(#[from] crate::crypto::error::CryptoError),
 
     #[error("serialization encode error: {0}")]
-    Encode(#[from] bincode::error::EncodeError),
+    Encode(#[from] bincode_next::error::EncodeError),
 
     #[error("serialization decode error: {0}")]
-    Decode(#[from] bincode::error::DecodeError),
+    Decode(#[from] bincode_next::error::DecodeError),
 
     #[error("invalid chunk size: {0}")]
     InvalidChunkSize(usize),

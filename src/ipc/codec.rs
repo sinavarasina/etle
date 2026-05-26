@@ -10,7 +10,7 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let payload = bincode::serde::encode_to_vec(message, bincode::config::standard())?;
+    let payload = bincode_next::serde::encode_to_vec(message, bincode_next::config::standard())?;
     validate_frame_len(payload.len())?;
 
     writer
@@ -37,7 +37,7 @@ where
     reader.read_exact(&mut payload).await?;
 
     let (message, bytes_read): (T, usize) =
-        bincode::serde::decode_from_slice(&payload, bincode::config::standard())?;
+        bincode_next::serde::decode_from_slice(&payload, bincode_next::config::standard())?;
 
     if bytes_read != payload.len() {
         return Err(IpcError::TrailingBytes {
