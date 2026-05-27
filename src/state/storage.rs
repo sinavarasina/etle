@@ -105,6 +105,7 @@ pub fn has_chunk(paths: &LibraryPaths, index: u32) -> bool {
     paths.chunk_path(index).is_file()
 }
 
+#[allow(unused_variables)]
 fn write_file_atomic(path: &Path, bytes: &[u8], secret: bool) -> Result<(), std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;

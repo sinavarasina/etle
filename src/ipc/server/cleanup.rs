@@ -1,5 +1,7 @@
+#[cfg(unix)]
 use super::prelude::*;
 
+#[cfg(unix)]
 pub(super) struct IpcSocketCleanup {
     socket_path: PathBuf,
 }
