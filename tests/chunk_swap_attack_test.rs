@@ -226,7 +226,7 @@ fn detects_duplicate_chunk_injection() {
 
     println!(
         "[chunk-swap] chunk[2] diganti dengan isi chunk[0]:\n  asli:    {:?}\n  disusupi: {:?}",
-        &normal_output, &tampered_output
+        normal_output, tampered_output
     );
     println!("[chunk-swap] injeksi duplikat chunk: perubahan output terdeteksi ✓");
 
