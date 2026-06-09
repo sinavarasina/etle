@@ -1,3 +1,8 @@
+/* Windows-only GTK styling for ETLE.
+ * This is intentionally small and app-scoped. It borrows the visual language
+ * of Fluent/Windows 11 without depending on an external GTK theme.
+ */
+
 window.etle-window {
     background-color: #f3f3f3;
     color: #1f1f1f;
@@ -11,9 +16,13 @@ window.etle-window {
     color: #1f1f1f;
 }
 
+.etle-root {
+    padding: 4px;
+}
+
 .etle-header {
     background-color: #f3f3f3;
-    padding: 2px 2px 6px 2px;
+    padding: 4px 4px 8px 4px;
 }
 
 .etle-header-actions {
@@ -24,47 +33,51 @@ frame {
     background-color: #ffffff;
     border: 1px solid #e5e5e5;
     border-radius: 8px;
-    padding: 12px;
-    margin: 4px;
+    padding: 14px;
+    margin: 5px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 frame>label {
     color: #424242;
     font-weight: 600;
-    padding: 0 4px;
+    padding: 0 6px;
 }
 
 button {
-    min-height: 30px;
-    padding: 5px 12px;
+    min-height: 32px;
+    padding: 5px 14px;
     border: 1px solid rgba(0, 0, 0, 0.14);
     border-radius: 4px;
     background-color: #fbfbfb;
     color: #1f1f1f;
-    box-shadow: none;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.48);
     text-shadow: none;
 }
 
 button:hover {
     background-color: #f6f6f6;
-    border-color: rgba(0, 0, 0, 0.22);
+    border-color: rgba(0, 0, 0, 0.24);
 }
 
 button:active {
     background-color: #ececec;
-    border-color: rgba(0, 0, 0, 0.28);
+    border-color: rgba(0, 0, 0, 0.30);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 button:disabled {
     background-color: #f4f4f4;
     color: #9a9a9a;
     border-color: rgba(0, 0, 0, 0.08);
+    box-shadow: none;
 }
 
 button.suggested-action {
     background-color: #0067c0;
     color: #ffffff;
     border-color: #0067c0;
+    box-shadow: none;
 }
 
 button.suggested-action:hover {
@@ -78,6 +91,7 @@ button.suggested-action:active {
 button.destructive-action {
     color: #b3261e;
     border-color: rgba(179, 38, 30, 0.38);
+    background-color: #ffffff;
 }
 
 button.destructive-action:hover {
@@ -93,13 +107,20 @@ entry,
 passwordentry,
 spinbutton,
 textview {
-    min-height: 30px;
-    padding: 5px 8px;
+    min-height: 32px;
+    padding: 5px 9px;
     border: 1px solid rgba(0, 0, 0, 0.20);
     border-radius: 4px;
     background-color: #ffffff;
     color: #1f1f1f;
-    box-shadow: none;
+    box-shadow: inset 0 -1px rgba(0, 0, 0, 0.10);
+}
+
+entry:hover,
+passwordentry:hover,
+spinbutton:hover,
+textview:hover {
+    border-color: rgba(0, 0, 0, 0.32);
 }
 
 entry:focus,
@@ -111,13 +132,33 @@ textview:focus {
 }
 
 checkbutton {
-    min-height: 28px;
+    min-height: 30px;
+}
+
+stackswitcher {
+    background-color: #eaeaea;
+    border-radius: 6px;
+    padding: 3px;
 }
 
 stackswitcher button {
-    min-height: 32px;
-    padding: 6px 16px;
+    min-height: 34px;
+    padding: 6px 18px;
     border-radius: 5px;
+    border-color: transparent;
+    background-color: transparent;
+    box-shadow: none;
+}
+
+stackswitcher button:hover {
+    background-color: rgba(255, 255, 255, 0.70);
+    border-color: transparent;
+}
+
+stackswitcher button:checked {
+    background-color: #ffffff;
+    border-color: rgba(0, 0, 0, 0.10);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 listbox {
@@ -126,7 +167,7 @@ listbox {
 
 listbox row {
     margin: 2px;
-    padding: 2px;
+    padding: 3px;
     border-radius: 6px;
 }
 
@@ -135,7 +176,7 @@ listbox row:hover {
 }
 
 listbox row:selected {
-    background-color: #e6f2ff;
+    background-color: #e5f1fb;
     color: #000000;
 }
 
@@ -150,6 +191,21 @@ progressbar progress {
     min-height: 4px;
     border-radius: 999px;
     background-color: #0067c0;
+}
+
+scrollbar {
+    background-color: transparent;
+}
+
+scrollbar slider {
+    min-width: 6px;
+    min-height: 6px;
+    border-radius: 999px;
+    background-color: rgba(0, 0, 0, 0.34);
+}
+
+scrollbar slider:hover {
+    background-color: rgba(0, 0, 0, 0.46);
 }
 
 .dim-label {
