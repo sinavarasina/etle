@@ -89,18 +89,44 @@ button.suggested-action:active {
 }
 
 button.destructive-action {
-    color: #b3261e;
-    border-color: rgba(179, 38, 30, 0.38);
-    background-color: #ffffff;
+    background-color: #c42b1c;
+    color: #ffffff;
+    border-color: #c42b1c;
+    box-shadow: none;
+}
+
+button.destructive-action label {
+    color: #ffffff;
 }
 
 button.destructive-action:hover {
-    background-color: #fff1f0;
-    border-color: rgba(179, 38, 30, 0.55);
+    background-color: #d13438;
+    color: #ffffff;
+    border-color: #d13438;
+}
+
+button.destructive-action:hover label {
+    color: #ffffff;
 }
 
 button.destructive-action:active {
-    background-color: #fde2df;
+    background-color: #a4262c;
+    color: #ffffff;
+    border-color: #a4262c;
+}
+
+button.destructive-action:active label {
+    color: #ffffff;
+}
+
+button.destructive-action:disabled {
+    background-color: #f3f3f3;
+    color: #9a9a9a;
+    border-color: rgba(0, 0, 0, 0.08);
+}
+
+button.destructive-action:disabled label {
+    color: #9a9a9a;
 }
 
 entry,
