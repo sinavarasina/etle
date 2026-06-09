@@ -1,5 +1,8 @@
 //! Payload and chunk size limit coverage.
 
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::PathBuf};
 
 use etle::{
@@ -18,6 +21,9 @@ fn temp_file(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn codec_accepts_frame_at_exact_max_size() {
+    print_banner("codec_accepts_frame_at_exact_max_size");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_accepts_frame_at_exact_max_size");
     let raw_chunk_overhead = 1 + 4;
     let data_size = MAX_FRAME_SIZE - raw_chunk_overhead;
     let message = WireMessage::Chunk {
@@ -39,6 +45,9 @@ async fn codec_accepts_frame_at_exact_max_size() {
 
 #[tokio::test]
 async fn codec_rejects_frame_one_byte_over_max() {
+    print_banner("codec_rejects_frame_one_byte_over_max");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_rejects_frame_one_byte_over_max");
     let (mut writer, mut reader) = tokio::io::duplex(8);
     let over_limit = (MAX_FRAME_SIZE as u32 + 1).to_be_bytes();
 
@@ -54,6 +63,9 @@ async fn codec_rejects_frame_one_byte_over_max() {
 
 #[tokio::test]
 async fn codec_rejects_zero_length_frame() {
+    print_banner("codec_rejects_zero_length_frame");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_rejects_zero_length_frame");
     let (mut writer, mut reader) = tokio::io::duplex(8);
 
     writer.write_all(&0_u32.to_be_bytes()).await.unwrap();
@@ -68,6 +80,9 @@ async fn codec_rejects_zero_length_frame() {
 
 #[tokio::test]
 async fn codec_rejects_u32_max_frame_length() {
+    print_banner("codec_rejects_u32_max_frame_length");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_rejects_u32_max_frame_length");
     let (mut writer, mut reader) = tokio::io::duplex(8);
 
     writer.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
@@ -82,6 +97,9 @@ async fn codec_rejects_u32_max_frame_length() {
 
 #[tokio::test]
 async fn codec_handles_multiple_large_frames_sequentially() {
+    print_banner("codec_handles_multiple_large_frames_sequentially");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_handles_multiple_large_frames_sequentially");
     let chunk_size = 1024 * 1024;
     let num_chunks = 5;
 
@@ -101,6 +119,9 @@ async fn codec_handles_multiple_large_frames_sequentially() {
 
 #[test]
 fn chunker_rejects_zero_chunk_size() {
+    print_banner("chunker_rejects_zero_chunk_size");
+    print_step(1, "execute scenario");
+    print_kv("test", "chunker_rejects_zero_chunk_size");
     let path = temp_file("zero-chunk.bin");
     fs::write(&path, b"some data").unwrap();
 
@@ -112,6 +133,9 @@ fn chunker_rejects_zero_chunk_size() {
 
 #[test]
 fn chunker_accepts_minimum_chunk_size_of_one() {
+    print_banner("chunker_accepts_minimum_chunk_size_of_one");
+    print_step(1, "execute scenario");
+    print_kv("test", "chunker_accepts_minimum_chunk_size_of_one");
     let path = temp_file("min-chunk.bin");
     let data = b"abcde";
     fs::write(&path, data).unwrap();
@@ -126,6 +150,12 @@ fn chunker_accepts_minimum_chunk_size_of_one() {
 
 #[test]
 fn chunker_single_chunk_when_file_smaller_than_chunk_size() {
+    print_banner("chunker_single_chunk_when_file_smaller_than_chunk_size");
+    print_step(1, "execute scenario");
+    print_kv(
+        "test",
+        "chunker_single_chunk_when_file_smaller_than_chunk_size",
+    );
     let path = temp_file("single-chunk.bin");
     let data = b"tiny";
     fs::write(&path, data).unwrap();
@@ -140,6 +170,9 @@ fn chunker_single_chunk_when_file_smaller_than_chunk_size() {
 
 #[test]
 fn chunker_default_chunk_size_is_valid() {
+    print_banner("chunker_default_chunk_size_is_valid");
+    print_step(1, "execute scenario");
+    print_kv("test", "chunker_default_chunk_size_is_valid");
     let path = temp_file("default-chunk.bin");
     let data: Vec<u8> = (0..DEFAULT_CHUNK_SIZE + 100)
         .map(|index| index as u8)
@@ -156,6 +189,9 @@ fn chunker_default_chunk_size_is_valid() {
 
 #[tokio::test]
 async fn codec_handles_long_error_message() {
+    print_banner("codec_handles_long_error_message");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_handles_long_error_message");
     let long_message = "E".repeat(10_000);
     let message = WireMessage::Error {
         message: long_message,

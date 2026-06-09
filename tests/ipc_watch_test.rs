@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -16,6 +19,12 @@ use tokio::net::UnixStream;
 
 #[tokio::test]
 async fn ipc_event_subscription_does_not_block_other_commands() {
+    print_banner("ipc_event_subscription_does_not_block_other_commands");
+    print_step(1, "execute scenario");
+    print_kv(
+        "test",
+        "ipc_event_subscription_does_not_block_other_commands",
+    );
     let root = temp_dir("ipc-watch");
     let socket_path = root.join(".etle").join("etled.sock");
     fs::create_dir_all(socket_path.parent().unwrap()).unwrap();

@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -19,6 +22,9 @@ fn temp_path(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn unix_ipc_server_handles_ping_list_and_shutdown() {
+    print_banner("unix_ipc_server_handles_ping_list_and_shutdown");
+    print_step(1, "execute scenario");
+    print_kv("test", "unix_ipc_server_handles_ping_list_and_shutdown");
     let root = temp_path("ipc-server-root");
     let socket = root.join(".etle").join("etled.sock");
     let _ = fs::remove_dir_all(&root);

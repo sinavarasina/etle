@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::PathBuf};
 
 use etle::{
@@ -19,6 +22,9 @@ fn temp_path(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn library_server_serves_requested_share_id() {
+    print_banner("library_server_serves_requested_share_id");
+    print_step(1, "execute scenario");
+    print_kv("test", "library_server_serves_requested_share_id");
     let input = temp_path("library-server-input.bin");
     let bootstrap_output = temp_path("library-server-bootstrap-output.bin");
     let requested_output = temp_path("library-server-requested-output.bin");

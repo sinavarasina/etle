@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{
     fs,
     net::{Ipv4Addr, SocketAddr, UdpSocket as StdUdpSocket},
@@ -22,6 +25,12 @@ use etle::{
 
 #[tokio::test]
 async fn discovery_finds_one_local_seeder_and_downloads_without_manual_peer() {
+    print_banner("discovery_finds_one_local_seeder_and_downloads_without_manual_peer");
+    print_step(1, "execute scenario");
+    print_kv(
+        "test",
+        "discovery_finds_one_local_seeder_and_downloads_without_manual_peer",
+    );
     let root = temp_dir("discovery-download");
     let seeder_root = root.join("seeder");
     let downloader_root = root.join("downloader");

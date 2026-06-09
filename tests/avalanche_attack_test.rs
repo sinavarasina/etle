@@ -1,5 +1,8 @@
 //! Avalanche effect coverage for hash and encrypted metadata changes.
 
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use etle::crypto::{
     aead::Nonce,
     hash::{ChunkHash, FileId, hash_file},
@@ -36,6 +39,9 @@ fn flip_bit(data: &[u8], bit_position: usize) -> Vec<u8> {
 
 #[test]
 fn single_bit_flip_causes_large_ciphertext_change() {
+    print_banner("single_bit_flip_causes_large_ciphertext_change");
+    print_step(1, "execute scenario");
+    print_kv("test", "single_bit_flip_causes_large_ciphertext_change");
     let path_a = temp_file("plain-a.bin");
     let path_b = temp_file("plain-b.bin");
 
@@ -77,6 +83,9 @@ fn single_bit_flip_causes_large_ciphertext_change() {
 
 #[test]
 fn file_id_avalanche_on_single_bit_flip() {
+    print_banner("file_id_avalanche_on_single_bit_flip");
+    print_step(1, "execute scenario");
+    print_kv("test", "file_id_avalanche_on_single_bit_flip");
     let path_original = temp_file("fileid-original.bin");
     let path_flipped = temp_file("fileid-flipped.bin");
 
@@ -110,6 +119,9 @@ fn file_id_avalanche_on_single_bit_flip() {
 
 #[test]
 fn manifest_hash_field_avalanche() {
+    print_banner("manifest_hash_field_avalanche");
+    print_step(1, "execute scenario");
+    print_kv("test", "manifest_hash_field_avalanche");
     let base_manifest = Manifest {
         file_id: FileId([0x42_u8; 32]),
         file_name: "test.bin".to_string(),

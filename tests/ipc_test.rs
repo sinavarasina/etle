@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{net::SocketAddr, path::PathBuf};
 
 use etle::{
@@ -12,6 +15,9 @@ use tokio::io::duplex;
 
 #[tokio::test]
 async fn ipc_codec_roundtrips_command_response_and_event() {
+    print_banner("ipc_codec_roundtrips_command_response_and_event");
+    print_step(1, "execute scenario");
+    print_kv("test", "ipc_codec_roundtrips_command_response_and_event");
     let share_id = ShareId([7_u8; 32]);
     let listen: SocketAddr = "127.0.0.1:7000".parse().unwrap();
     let peer: SocketAddr = "127.0.0.1:7001".parse().unwrap();
@@ -64,6 +70,9 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
 #[cfg(unix)]
 #[test]
 fn ipc_paths_are_under_etle_state_directory() {
+    print_banner("ipc_paths_are_under_etle_state_directory");
+    print_step(1, "execute scenario");
+    print_kv("test", "ipc_paths_are_under_etle_state_directory");
     let path = ipc_path::default_ipc_socket_path(PathBuf::from("/tmp/etle-root"));
     assert_eq!(path, PathBuf::from("/tmp/etle-root/.etle/etled.sock"));
     assert_eq!(ipc_path::default_windows_pipe_name(), r"\\.\pipe\etled");
@@ -72,6 +81,9 @@ fn ipc_paths_are_under_etle_state_directory() {
 #[cfg(windows)]
 #[test]
 fn ipc_paths_use_windows_named_pipe() {
+    print_banner("ipc_paths_use_windows_named_pipe");
+    print_step(1, "execute scenario");
+    print_kv("test", "ipc_paths_use_windows_named_pipe");
     let path = ipc_path::default_ipc_socket_path(PathBuf::from(r"C:\Temp\etle-root"));
     assert_eq!(path, PathBuf::from(r"\\.\pipe\etled"));
     assert_eq!(ipc_path::default_windows_pipe_name(), r"\\.\pipe\etled");
@@ -79,5 +91,8 @@ fn ipc_paths_use_windows_named_pipe() {
 
 #[test]
 fn ipc_frame_size_is_smaller_than_transfer_frame_size() {
+    print_banner("ipc_frame_size_is_smaller_than_transfer_frame_size");
+    print_step(1, "execute scenario");
+    print_kv("test", "ipc_frame_size_is_smaller_than_transfer_frame_size");
     assert_eq!(MAX_IPC_FRAME_SIZE, 4 * 1024 * 1024);
 }

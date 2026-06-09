@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::PathBuf};
 
 use etle::{
@@ -19,6 +22,9 @@ fn temp_path(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn completed_download_state_can_seed_same_file_again() {
+    print_banner("completed_download_state_can_seed_same_file_again");
+    print_step(1, "execute scenario");
+    print_kv("test", "completed_download_state_can_seed_same_file_again");
     let input = temp_path("state-seed-input.bin");
     let first_output = temp_path("state-seed-first-output.bin");
     let second_output = temp_path("state-seed-second-output.bin");

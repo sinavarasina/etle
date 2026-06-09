@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::Path};
 
 use etle::{
@@ -37,6 +40,12 @@ fn copy_dir_all(from: impl AsRef<Path>, to: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn parallel_download_fetches_chunks_from_multiple_seeders() {
+    print_banner("parallel_download_fetches_chunks_from_multiple_seeders");
+    print_step(1, "execute scenario");
+    print_kv(
+        "test",
+        "parallel_download_fetches_chunks_from_multiple_seeders",
+    );
     let input = temp_path("parallel-input.bin");
     let bootstrap_output = temp_path("parallel-bootstrap-output.bin");
     let final_output = temp_path("parallel-output.bin");

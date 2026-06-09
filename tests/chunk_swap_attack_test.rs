@@ -1,5 +1,8 @@
 //! Tamper-evidence coverage for chunk swapping and replay attempts.
 
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use etle::{
     crypto::{
         aead::Nonce,
@@ -49,6 +52,9 @@ fn verify_chunk_against_manifest(
 
 #[test]
 fn detects_swapped_chunk_order() {
+    print_banner("detects_swapped_chunk_order");
+    print_step(1, "execute scenario");
+    print_kv("test", "detects_swapped_chunk_order");
     let path = temp_file("swap-order.bin");
     let data: Vec<u8> = (0..12u8).collect();
     fs::write(&path, &data).unwrap();
@@ -83,6 +89,9 @@ fn detects_swapped_chunk_order() {
 
 #[test]
 fn detects_modified_chunk_content_via_hash() {
+    print_banner("detects_modified_chunk_content_via_hash");
+    print_step(1, "execute scenario");
+    print_kv("test", "detects_modified_chunk_content_via_hash");
     let path = temp_file("modified-chunk.bin");
     let data = b"chunk0dataXXchunk1dataYYchunk2dataZZ";
     fs::write(&path, data).unwrap();
@@ -113,6 +122,9 @@ fn detects_modified_chunk_content_via_hash() {
 
 #[test]
 fn detects_chunk_from_different_file_replay() {
+    print_banner("detects_chunk_from_different_file_replay");
+    print_step(1, "execute scenario");
+    print_kv("test", "detects_chunk_from_different_file_replay");
     let path_a = temp_file("replay-file-a.bin");
     let path_b = temp_file("replay-file-b.bin");
 
@@ -150,6 +162,9 @@ fn detects_chunk_from_different_file_replay() {
 
 #[test]
 fn detects_duplicate_chunk_injection() {
+    print_banner("detects_duplicate_chunk_injection");
+    print_step(1, "execute scenario");
+    print_kv("test", "detects_duplicate_chunk_injection");
     let path = temp_file("dup-chunk.bin");
     let data: Vec<u8> = (0..16u8).collect();
     fs::write(&path, &data).unwrap();
@@ -181,6 +196,9 @@ fn detects_duplicate_chunk_injection() {
 
 #[test]
 fn join_chunks_is_order_agnostic_by_index() {
+    print_banner("join_chunks_is_order_agnostic_by_index");
+    print_step(1, "execute scenario");
+    print_kv("test", "join_chunks_is_order_agnostic_by_index");
     let path = temp_file("out-of-order.bin");
     let data: Vec<u8> = (0..12u8).collect();
     fs::write(&path, &data).unwrap();
@@ -202,6 +220,9 @@ fn join_chunks_is_order_agnostic_by_index() {
 
 #[test]
 fn verify_rejects_chunk_with_out_of_range_index() {
+    print_banner("verify_rejects_chunk_with_out_of_range_index");
+    print_step(1, "execute scenario");
+    print_kv("test", "verify_rejects_chunk_with_out_of_range_index");
     let manifest = Manifest {
         file_id: FileId([0x11_u8; 32]),
         file_name: "test.bin".to_string(),
@@ -225,6 +246,9 @@ fn verify_rejects_chunk_with_out_of_range_index() {
 
 #[test]
 fn encrypted_chunks_roundtrip_is_tamper_evident() {
+    print_banner("encrypted_chunks_roundtrip_is_tamper_evident");
+    print_step(1, "execute scenario");
+    print_kv("test", "encrypted_chunks_roundtrip_is_tamper_evident");
     let path = temp_file("roundtrip-integrity.bin");
     let data = b"integrity check data for tamper evidence test";
     fs::write(&path, data).unwrap();

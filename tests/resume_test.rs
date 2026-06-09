@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::PathBuf};
 
 use etle::{
@@ -19,6 +22,9 @@ fn temp_path(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn download_can_resume_from_existing_verified_chunks() {
+    print_banner("download_can_resume_from_existing_verified_chunks");
+    print_step(1, "execute scenario");
+    print_kv("test", "download_can_resume_from_existing_verified_chunks");
     let input = temp_path("resume-input.bin");
     let first_output = temp_path("resume-first-output.bin");
     let resumed_output = temp_path("resume-output.bin");

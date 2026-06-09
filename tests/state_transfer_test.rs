@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::PathBuf};
 
 use etle::{
@@ -20,6 +23,9 @@ fn temp_path(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn transfer_persists_seed_and_download_library_state() {
+    print_banner("transfer_persists_seed_and_download_library_state");
+    print_step(1, "execute scenario");
+    print_kv("test", "transfer_persists_seed_and_download_library_state");
     let input = temp_path("state-transfer-input.bin");
     let output = temp_path("state-transfer-output.bin");
     let seeder_root = temp_path("state-transfer-seeder-root");

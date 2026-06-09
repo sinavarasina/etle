@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use tokio::io::AsyncWriteExt;
 
 use etle::{
@@ -42,6 +45,9 @@ fn assert_binary_codec_roundtrip(message: WireMessage) {
 
 #[test]
 fn wire_messages_serialize_roundtrip() {
+    print_banner("wire_messages_serialize_roundtrip");
+    print_step(1, "execute scenario");
+    print_kv("test", "wire_messages_serialize_roundtrip");
     let messages = vec![
         WireMessage::Hello {
             peer_id: "peer-a".to_string(),
@@ -71,6 +77,9 @@ fn wire_messages_serialize_roundtrip() {
 
 #[tokio::test]
 async fn codec_sends_and_receives_message() {
+    print_banner("codec_sends_and_receives_message");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_sends_and_receives_message");
     let (mut client, mut server) = tokio::io::duplex(1024);
     let sent = WireMessage::Hello {
         peer_id: "peer-a".to_string(),
@@ -84,6 +93,9 @@ async fn codec_sends_and_receives_message() {
 
 #[tokio::test]
 async fn codec_rejects_empty_frame() {
+    print_banner("codec_rejects_empty_frame");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_rejects_empty_frame");
     let (mut client, mut server) = tokio::io::duplex(4);
 
     client.write_all(&0_u32.to_be_bytes()).await.unwrap();
@@ -96,6 +108,9 @@ async fn codec_rejects_empty_frame() {
 
 #[tokio::test]
 async fn codec_rejects_too_large_frame() {
+    print_banner("codec_rejects_too_large_frame");
+    print_step(1, "execute scenario");
+    print_kv("test", "codec_rejects_too_large_frame");
     let (mut client, mut server) = tokio::io::duplex(4);
     let too_large = (MAX_FRAME_SIZE as u32 + 1).to_be_bytes();
 

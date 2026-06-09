@@ -1,3 +1,6 @@
+mod common;
+
+use common::{print_banner, print_kv, print_step};
 use std::{fs, path::Path};
 
 use etle::{
@@ -37,6 +40,12 @@ fn copy_dir_all(from: impl AsRef<Path>, to: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn multi_peer_download_falls_back_and_reuses_persisted_chunks() {
+    print_banner("multi_peer_download_falls_back_and_reuses_persisted_chunks");
+    print_step(1, "execute scenario");
+    print_kv(
+        "test",
+        "multi_peer_download_falls_back_and_reuses_persisted_chunks",
+    );
     let input = temp_path("multi-peer-input.bin");
     let bootstrap_output = temp_path("multi-peer-bootstrap-output.bin");
     let final_output = temp_path("multi-peer-output.bin");

@@ -32,12 +32,32 @@ fn main() -> anyhow::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| default_workspace_path(&input));
 
-    prepare_workspace(&workspace)?;
+    print_banner("ETLE example: debug workspace roundtrip");
 
+    print_step(1, "prepare input and workspace");
+    prepare_workspace(&workspace)?;
     let file_id = hash_file(&input)?;
     let file_size = fs::metadata(&input)?.len();
-    let plain_chunks = read_file_chunks(&input, DEFAULT_CHUNK_SIZE)?;
+    print_kv("input", input.display());
+    print_kv("input_size", format_args!("{file_size} bytes"));
+    print_kv("file_id", file_id);
+    print_kv("workspace", workspace.display());
 
+    print_step(2, "split plaintext into chunks");
+    let plain_chunks = read_file_chunks(&input, DEFAULT_CHUNK_SIZE)?;
+    print_kv("chunk_size", format_args!("{DEFAULT_CHUNK_SIZE} bytes"));
+    print_kv("chunks", plain_chunks.len());
+    for chunk in plain_chunks.iter().take(5) {
+        print_kv(
+            &format!("chunk_{}_plain_size", chunk.index),
+            chunk.data.len(),
+        );
+    }
+    if plain_chunks.len() > 5 {
+        print_kv("remaining_chunks", plain_chunks.len() - 5);
+    }
+
+    print_step(3, "derive authenticated session");
     let psk = example_psk();
     let seeder = EphemeralKeypair::generate();
     let peer = EphemeralKeypair::generate();
@@ -50,6 +70,7 @@ fn main() -> anyhow::Result<()> {
         derive_session_key_with_transcript(seeder_shared, peer_public_key, seeder_public_key);
     let peer_session_key =
         derive_session_key_with_transcript(peer_shared, peer_public_key, seeder_public_key);
+    print_kv("session_keys_equal", seeder_session_key == peer_session_key);
     anyhow::ensure!(
         seeder_session_key == peer_session_key,
         "session keys do not match"
@@ -69,44 +90,15 @@ fn main() -> anyhow::Result<()> {
         seeder_public_key,
         AuthRole::Client,
     );
-    anyhow::ensure!(
-        auth_tags_equal(&peer_proof, &expected_peer_proof),
-        "client PSK proof failed"
-    );
+    let psk_ok = auth_tags_equal(&peer_proof, &expected_peer_proof);
+    print_kv("client_psk_proof", psk_ok);
+    anyhow::ensure!(psk_ok, "client PSK proof failed");
 
+    print_step(4, "wrap file key and encrypt chunks");
     let file_key = generate_file_key();
     let wrapped = wrap_file_key(&seeder_session_key, file_id, &file_key)?;
     let peer_file_key = unwrap_file_key(&peer_session_key, file_id, &wrapped)?;
-    anyhow::ensure!(
-        peer_file_key == file_key,
-        "unwrapped file key does not match"
-    );
-
-    let encrypted = encrypt_file(&input, &file_key, DEFAULT_CHUNK_SIZE)?;
-    write_debug_workspace(&encrypted, &workspace)?;
-
-    let loaded = read_debug_workspace(&workspace)?;
-    let plaintext = decrypt_to_bytes(&loaded, &peer_file_key)?;
-    let output_path = workspace.join(format!("reconstructed-{}", file_name(&input)));
-    fs::write(&output_path, plaintext)?;
-    let output_hash = hash_file(&output_path)?;
-    anyhow::ensure!(
-        output_hash == file_id,
-        "reconstructed file hash does not match original"
-    );
-
-    print_kv("example", "debug_roundtrip");
-    print_kv("status", "ok");
-    print_kv("input", input.display());
-    print_kv("input_size", format_args!("{file_size} bytes"));
-    print_kv("file_id", file_id);
-    print_kv("chunk_size", format_args!("{DEFAULT_CHUNK_SIZE} bytes"));
-    print_kv("chunks", plain_chunks.len());
-    print_kv("workspace", workspace.display());
-    print_kv("manifest", debug_manifest_path(&workspace).display());
-    print_kv("chunks_dir", debug_chunks_dir(&workspace).display());
-    print_kv("output", output_path.display());
-    print_kv("output_file_id", output_hash);
+    let key_ok = peer_file_key == file_key;
     print_kv(
         "wrapped_file_key_nonce",
         format_args!("{:?}", wrapped.nonce),
@@ -115,6 +107,13 @@ fn main() -> anyhow::Result<()> {
         "wrapped_file_key_size",
         format_args!("{} bytes", wrapped.data.len()),
     );
+    print_kv("unwrapped_key_matches", key_ok);
+    anyhow::ensure!(key_ok, "unwrapped file key does not match");
+
+    let encrypted = encrypt_file(&input, &file_key, DEFAULT_CHUNK_SIZE)?;
+    write_debug_workspace(&encrypted, &workspace)?;
+    print_kv("manifest", debug_manifest_path(&workspace).display());
+    print_kv("chunks_dir", debug_chunks_dir(&workspace).display());
 
     if let Some(first) = encrypted.chunks.get(&0) {
         print_kv(
@@ -128,6 +127,26 @@ fn main() -> anyhow::Result<()> {
         print_kv("first_chunk_prefix", hex_prefix(&first.data, 16));
     }
 
+    print_step(5, "reload workspace and decrypt");
+    let loaded = read_debug_workspace(&workspace)?;
+    let plaintext = decrypt_to_bytes(&loaded, &peer_file_key)?;
+    print_kv(
+        "loaded_manifest_matches",
+        loaded.manifest == encrypted.manifest,
+    );
+    print_kv("decrypted_bytes", plaintext.len());
+
+    print_step(6, "reconstruct output and verify final hash");
+    let output_path = workspace.join(format!("reconstructed-{}", file_name(&input)));
+    fs::write(&output_path, plaintext)?;
+    let output_hash = hash_file(&output_path)?;
+    let verified = output_hash == file_id;
+    print_kv("output", output_path.display());
+    print_kv("output_file_id", output_hash);
+    print_kv("verified", verified);
+    anyhow::ensure!(verified, "reconstructed file hash does not match original");
+
+    print_result("debug_roundtrip", "ok");
     Ok(())
 }
 
@@ -161,22 +180,37 @@ fn file_name(input: &Path) -> String {
 
 fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
     let shown = bytes.len().min(max_len);
-    let mut output = String::with_capacity(shown * 3);
+    let mut output = String::with_capacity(shown * 2 + 3);
 
-    for (index, byte) in bytes.iter().take(shown).enumerate() {
-        if index > 0 {
-            output.push(' ');
-        }
+    for byte in bytes.iter().take(shown) {
         output.push_str(&format!("{byte:02x}"));
     }
 
     if bytes.len() > shown {
-        output.push_str(" ...");
+        output.push_str("...");
     }
 
     output
 }
 
+fn print_banner(title: &str) {
+    println!();
+    println!("============================================");
+    println!("{title}");
+    println!("============================================");
+}
+
+fn print_step(index: usize, title: &str) {
+    println!();
+    println!("[ step={index} title=\"{title}\" ]");
+}
+
 fn print_kv(key: &str, value: impl std::fmt::Display) {
     println!("{key}={value}");
+}
+
+fn print_result(example: &str, status: &str) {
+    println!();
+    println!("result={status}");
+    println!("example={example}");
 }
