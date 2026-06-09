@@ -10,7 +10,11 @@ use etle::{
     config::load,
     crypto::key_exchange::AuthPsk,
     discovery::{options::DiscoveryOptions, server},
-    ipc::{path::default_ipc_socket_path, server::listener},
+    ipc::{
+        message::IpcEvent,
+        path::default_ipc_socket_path,
+        server::{events, listener},
+    },
     network::{
         tcp::bind_listener,
         transfer::{
@@ -170,15 +174,20 @@ async fn main() -> anyhow::Result<()> {
                 result?;
             } else {
                 println!("[daemon] ipc socket: {}", ipc_socket.display());
-                println!("[daemon] ipc commands: Ping, ListShares, Shutdown");
+                println!(
+                    "[daemon] ipc commands: Ping, ListShares, SeedFile, Download, SubscribeEvents, Shutdown"
+                );
 
                 let p2p_library_root = library_root.clone();
                 let p2p_task = tokio::spawn(async move {
                     serve::library_forever(listener, p2p_library_root, serve_options).await
                 });
 
+                events::publish(IpcEvent::ServerStarted { listen });
+
                 let ipc_result = listener::forever(&ipc_socket, &library_root).await;
                 p2p_task.abort();
+                events::publish(IpcEvent::ServerStopped);
                 if let Some(task) = discovery_task {
                     task.abort();
                 }

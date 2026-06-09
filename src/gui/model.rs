@@ -7,6 +7,7 @@ use std::{
 };
 
 use etle::{
+    config::load,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
         message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
@@ -23,14 +24,46 @@ pub const DEFAULT_ACTIVITY_LIMIT: usize = 160;
 #[derive(Debug, Clone)]
 pub struct GuiInit {
     pub socket_path: String,
+    pub auth_psk: String,
+    pub download_parallelism: usize,
+    pub request_window: usize,
+    pub discovery_port: u16,
+    pub discovery_timeout_ms: u64,
+    pub discovery_multicast: Ipv4Addr,
+    pub startup_warning: Option<String>,
 }
 
 impl Default for GuiInit {
     fn default() -> Self {
+        let mut startup_warning = None;
+        let config = match load::load() {
+            Ok(config) => config,
+            Err(error) => {
+                startup_warning = Some(format!(
+                    "config: failed to load config.toml; using built-in defaults ({error})"
+                ));
+                Default::default()
+            }
+        };
+
+        let library_root = config.library_root().unwrap_or_else(default_library_root);
+        let socket_path = config
+            .ipc_socket()
+            .unwrap_or_else(|| default_ipc_socket_path(&library_root));
+        let auth_psk = std::env::var("ETLE_AUTH_PSK")
+            .ok()
+            .or_else(|| config.auth_psk())
+            .unwrap_or_default();
+
         Self {
-            socket_path: default_ipc_socket_path(default_library_root())
-                .display()
-                .to_string(),
+            socket_path: socket_path.display().to_string(),
+            auth_psk,
+            download_parallelism: config.parallel(),
+            request_window: config.request_window(),
+            discovery_port: config.discovery_port(),
+            discovery_timeout_ms: config.discovery_timeout_ms(),
+            discovery_multicast: config.discovery_multicast(),
+            startup_warning,
         }
     }
 }
@@ -218,7 +251,7 @@ pub struct EtleGui {
 
 impl EtleGui {
     pub fn new(init: GuiInit) -> Self {
-        Self {
+        let mut model = Self {
             active_socket_path: init.socket_path.clone(),
             socket_draft: init.socket_path,
             connected: false,
@@ -249,14 +282,20 @@ impl EtleGui {
             download_share_id: String::new(),
             download_peers: String::new(),
             output_path: String::new(),
-            download_parallelism: 4,
-            download_request_window: 16,
-            discovery_port: 37037,
-            discovery_timeout_ms: 3_000,
-            discovery_multicast: Ipv4Addr::new(239, 255, 0, 86),
+            download_parallelism: init.download_parallelism,
+            download_request_window: init.request_window,
+            discovery_port: init.discovery_port,
+            discovery_timeout_ms: init.discovery_timeout_ms,
+            discovery_multicast: init.discovery_multicast,
             resume: true,
-            auth_psk: String::new(),
+            auth_psk: init.auth_psk,
+        };
+
+        if let Some(warning) = init.startup_warning {
+            model.push_log(warning);
         }
+
+        model
     }
 
     pub fn refresh_due(&self) -> bool {
@@ -278,7 +317,9 @@ impl EtleGui {
             ShareId::from_str(share_id_text.trim()).map_err(|_| "invalid share id".to_string())?;
         let peers = parse_peers(peers_text)?;
         let output = non_empty(output_text.trim()).map(PathBuf::from);
-        let auth_psk = non_empty(auth_psk_text.trim()).map(ToOwned::to_owned);
+        let auth_psk = non_empty(auth_psk_text.trim())
+            .or_else(|| non_empty(&self.auth_psk))
+            .map(ToOwned::to_owned);
         let discovery_multicast = discovery_multicast_text
             .trim()
             .parse()
@@ -289,7 +330,7 @@ impl EtleGui {
                 share_id,
                 peers,
                 output,
-                parallelism: self.download_parallelism.max(1),
+                parallelism: self.download_parallelism,
                 request_window: self.download_request_window.max(1),
                 discovery_port: self.discovery_port,
                 discovery_timeout_ms: self.discovery_timeout_ms.max(1),
@@ -301,7 +342,7 @@ impl EtleGui {
                 share_id,
                 peers,
                 output,
-                parallelism: self.download_parallelism.max(1),
+                parallelism: self.download_parallelism,
                 request_window: self.download_request_window.max(1),
                 discovery_port: self.discovery_port,
                 discovery_timeout_ms: self.discovery_timeout_ms.max(1),

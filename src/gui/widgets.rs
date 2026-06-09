@@ -30,7 +30,6 @@ pub struct GuiWidgets {
     pub discovery_port_spin: SpinButton,
     pub discovery_timeout_spin: SpinButton,
     pub resume_check: CheckButton,
-    pub psk_entry: PasswordEntry,
 
     pub transfer_list: ListBox,
     pub progress_bar: ProgressBar,
@@ -67,8 +66,8 @@ pub fn build_library_page(
     let page = gtk::Box::new(Orientation::Vertical, 8);
 
     let actions = gtk::Box::new(Orientation::Horizontal, 6);
-    let copy_button = Button::with_label("Copy ID");
-    let clear_finished_button = Button::with_label("Clear finished transfers");
+    let copy_button = Button::with_label("Copy share ID");
+    let clear_finished_button = Button::with_label("Clear completed transfers");
     actions.append(&copy_button);
     actions.append(&clear_finished_button);
     page.append(&actions);
@@ -131,12 +130,15 @@ pub fn build_seed_page(
 
     let options = gtk::Box::new(Orientation::Vertical, 6);
     let chunk_row = gtk::Box::new(Orientation::Horizontal, 6);
-    chunk_row.append(&Label::new(Some("chunk")));
+    let chunk_label = Label::new(Some("Chunk size (bytes)"));
+    chunk_label.set_width_chars(18);
+    chunk_label.set_xalign(0.0);
+    chunk_row.append(&chunk_label);
     chunk_row.append(seed_chunk_spin);
     options.append(&chunk_row);
 
     let action_row = gtk::Box::new(Orientation::Horizontal, 6);
-    let seed_selected_button = Button::with_label("Seed selected");
+    let seed_selected_button = Button::with_label("Seed selected file");
     let remove_button = Button::with_label("Remove");
     let clear_button = Button::with_label("Clear list");
     action_row.append(&seed_selected_button);
@@ -210,11 +212,11 @@ pub fn build_download_page(
     let page = gtk::Box::new(Orientation::Vertical, 8);
 
     let form = gtk::Box::new(Orientation::Vertical, 8);
-    form.append(&labeled_row("share id", share_id_entry));
-    form.append(&labeled_row("peers", peers_entry));
+    form.append(&labeled_row("Share ID", share_id_entry));
+    form.append(&labeled_row("Peers", peers_entry));
 
     let output_row = gtk::Box::new(Orientation::Horizontal, 6);
-    let output_label = Label::new(Some("output"));
+    let output_label = Label::new(Some("Output path"));
     output_label.set_width_chars(12);
     output_label.set_xalign(0.0);
     output_row.append(&output_label);
@@ -224,17 +226,17 @@ pub fn build_download_page(
     form.append(&output_row);
 
     let advanced = gtk::Box::new(Orientation::Vertical, 6);
-    advanced.append(&labeled_row("parallel", parallel_spin));
-    advanced.append(&labeled_row("window", request_window_spin));
-    advanced.append(&labeled_row("disc. port", discovery_port_spin));
-    advanced.append(&labeled_row("timeout ms", discovery_timeout_spin));
-    advanced.append(&labeled_row("multicast", discovery_multicast_entry));
+    advanced.append(&labeled_row("Parallel workers", parallel_spin));
+    advanced.append(&labeled_row("Request window", request_window_spin));
+    advanced.append(&labeled_row("Discovery port", discovery_port_spin));
+    advanced.append(&labeled_row("Timeout (ms)", discovery_timeout_spin));
+    advanced.append(&labeled_row("Multicast address", discovery_multicast_entry));
     form.append(&advanced);
 
-    form.append(&labeled_row("auth psk", psk_entry));
+    form.append(&labeled_row("Auth PSK", psk_entry));
     form.append(resume_check);
 
-    let start_button = Button::with_label("Download");
+    let start_button = Button::with_label("Start download");
     form.append(&start_button);
     page.append(&section("Download request", &form));
 
@@ -299,16 +301,27 @@ pub fn build_activity_page(
     sender: &ComponentSender<EtleGui>,
 ) -> gtk::Box {
     let page = gtk::Box::new(Orientation::Vertical, 8);
+    page.set_hexpand(true);
 
     let progress_box = gtk::Box::new(Orientation::Vertical, 4);
+    progress_box.set_hexpand(true);
+    progress_bar.set_hexpand(true);
+    progress_label.set_hexpand(true);
+    progress_label.set_width_chars(1);
+    progress_label.set_max_width_chars(96);
+    progress_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     progress_box.append(progress_bar);
     progress_box.append(progress_label);
     page.append(&section("Progress", &progress_box));
+
+    transfer_list.set_hexpand(true);
+    transfer_list.set_vexpand(true);
 
     let transfer_scroll = ScrolledWindow::builder()
         .child(transfer_list)
         .vexpand(true)
         .hexpand(true)
+        .hscrollbar_policy(gtk::PolicyType::Never)
         .min_content_height(220)
         .build();
     page.append(&section("Transfers", &transfer_scroll));
@@ -317,7 +330,7 @@ pub fn build_activity_page(
     let activity_header = gtk::Box::new(Orientation::Horizontal, 6);
     let spacer = Label::new(None);
     spacer.set_hexpand(true);
-    let clear_finished_button = Button::with_label("Clear finished");
+    let clear_finished_button = Button::with_label("Clear completed");
     let clear_button = Button::with_label("Clear log");
     activity_header.append(&spacer);
     activity_header.append(&clear_finished_button);
@@ -329,6 +342,7 @@ pub fn build_activity_page(
         .editable(false)
         .monospace(true)
         .vexpand(true)
+        .wrap_mode(gtk::WrapMode::WordChar)
         .hexpand(true)
         .build();
     let scroll = ScrolledWindow::builder()
@@ -336,6 +350,7 @@ pub fn build_activity_page(
         .vexpand(true)
         .hexpand(true)
         .min_content_height(180)
+        .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
     log_box.append(&scroll);
     page.append(&section("Activity log", &log_box));
@@ -367,7 +382,7 @@ pub fn build_settings_page(
 
     let box_ = gtk::Box::new(Orientation::Vertical, 8);
     let socket_row = gtk::Box::new(Orientation::Horizontal, 6);
-    let socket_label = Label::new(Some("ipc"));
+    let socket_label = Label::new(Some("IPC endpoint"));
     socket_label.set_width_chars(12);
     socket_label.set_xalign(0.0);
     socket_row.append(&socket_label);
@@ -376,11 +391,11 @@ pub fn build_settings_page(
     socket_row.append(&apply_socket_button);
     box_.append(&socket_row);
 
-    box_.append(&labeled_row("default psk", psk_entry));
+    box_.append(&labeled_row("Default PSK", psk_entry));
 
     let limits = gtk::Box::new(Orientation::Vertical, 6);
-    limits.append(&labeled_row("refresh s", refresh_interval_spin));
-    limits.append(&labeled_row("log lines", activity_limit_spin));
+    limits.append(&labeled_row("Refresh interval (s)", refresh_interval_spin));
+    limits.append(&labeled_row("Activity lines", activity_limit_spin));
     box_.append(&limits);
 
     box_.append(auto_refresh_check);
@@ -391,7 +406,7 @@ pub fn build_settings_page(
     let action_row_b = gtk::Box::new(Orientation::Horizontal, 6);
     let ping_button = Button::with_label("Ping");
     let refresh_button = Button::with_label("Refresh now");
-    let watch_button = Button::with_label("Watch events");
+    let watch_button = Button::with_label("Start event watch");
     let apply_settings_button = Button::with_label("Apply settings");
     action_row_a.append(&ping_button);
     action_row_a.append(&refresh_button);
@@ -451,7 +466,7 @@ where
 {
     let row = gtk::Box::new(Orientation::Horizontal, 6);
     let label = Label::new(Some(label));
-    label.set_width_chars(10);
+    label.set_width_chars(18);
     label.set_xalign(0.0);
     row.append(&label);
     widget.set_hexpand(true);
@@ -504,6 +519,8 @@ pub fn refill_library_list(list: &ListBox, shares: &[IpcShareSummary]) {
         let title = Label::new(Some(&share.name));
         title.set_xalign(0.0);
         title.set_hexpand(true);
+        title.set_width_chars(1);
+        title.set_max_width_chars(48);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         title_row.append(&title);
         let mode = share.mode.as_deref().unwrap_or("unknown");
@@ -513,9 +530,9 @@ pub fn refill_library_list(list: &ListBox, shares: &[IpcShareSummary]) {
         item.append(&title_row);
 
         let secret = if share.has_secret {
-            "key yes"
+            "key: yes"
         } else {
-            "key no"
+            "key: no"
         };
         let percent = share_percent(share);
         let meta = muted_label(&format!(
@@ -556,6 +573,8 @@ pub fn refill_transfer_list(list: &ListBox, transfers: &[GuiTransfer]) {
         let title = Label::new(Some(&transfer.label));
         title.set_xalign(0.0);
         title.set_hexpand(true);
+        title.set_width_chars(1);
+        title.set_max_width_chars(48);
         title.set_ellipsize(gtk::pango::EllipsizeMode::End);
         title_row.append(&title);
         let badge_text = if transfer.status == TransferStatus::Running {
@@ -670,6 +689,8 @@ fn muted_label(text: &str) -> Label {
     let label = Label::new(Some(text));
     label.set_xalign(0.0);
     label.add_css_class("dim-label");
+    label.set_width_chars(1);
+    label.set_max_width_chars(96);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     label
 }
@@ -690,7 +711,11 @@ fn short_phase(detail: &str) -> &str {
 
 fn share_fraction(share: &IpcShareSummary) -> f64 {
     if share.total_chunks == 0 {
-        0.0
+        if matches!(share.mode.as_deref(), Some("seeding" | "completed")) {
+            1.0
+        } else {
+            0.0
+        }
     } else {
         (share.completed_chunks as f64 / share.total_chunks as f64).clamp(0.0, 1.0)
     }

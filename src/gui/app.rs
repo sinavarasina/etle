@@ -71,7 +71,9 @@ impl SimpleComponent for EtleGui {
 
         let status_label = Label::new(None);
         status_label.set_xalign(0.0);
-        status_label.set_width_chars(14);
+        status_label.set_width_chars(32);
+        status_label.set_max_width_chars(36);
+        status_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         header_main.append(&status_label);
 
         let socket_entry = Entry::builder()
@@ -135,7 +137,7 @@ impl SimpleComponent for EtleGui {
             .hexpand(true)
             .placeholder_text("optional output path")
             .build();
-        let parallel_spin = SpinButton::with_range(1.0, 128.0, 1.0);
+        let parallel_spin = SpinButton::with_range(0.0, 128.0, 1.0);
         parallel_spin.set_value(model.download_parallelism as f64);
         let request_window_spin = SpinButton::with_range(1.0, 2048.0, 1.0);
         request_window_spin.set_value(model.download_request_window as f64);
@@ -145,9 +147,10 @@ impl SimpleComponent for EtleGui {
         discovery_timeout_spin.set_value(model.discovery_timeout_ms as f64);
         let discovery_multicast_entry = Entry::builder().hexpand(true).build();
         discovery_multicast_entry.set_text(&model.discovery_multicast.to_string());
-        let resume_check = CheckButton::with_label("resume existing chunks");
+        let resume_check = CheckButton::with_label("Resume existing chunks");
         resume_check.set_active(model.resume);
         let psk_entry = PasswordEntry::builder().hexpand(true).build();
+        psk_entry.set_placeholder_text(Some("Override; empty uses the default PSK"));
         let download_page = build_download_page(
             &share_id_entry,
             &peers_entry,
@@ -181,9 +184,11 @@ impl SimpleComponent for EtleGui {
         let settings_socket_entry = Entry::builder().hexpand(true).build();
         settings_socket_entry.set_text(&model.socket_draft);
         let settings_psk_entry = PasswordEntry::builder().hexpand(true).build();
-        let auto_refresh_check = CheckButton::with_label("auto refresh library");
+        settings_psk_entry.set_text(&model.auth_psk);
+        let auto_refresh_check = CheckButton::with_label("Auto-refresh library");
         auto_refresh_check.set_active(model.auto_refresh);
-        let clear_activity_check = CheckButton::with_label("clear activity when starting new task");
+        let clear_activity_check =
+            CheckButton::with_label("Clear activity when starting a new task");
         clear_activity_check.set_active(model.clear_activity_on_task);
         let refresh_interval_spin = SpinButton::with_range(1.0, 60.0, 1.0);
         refresh_interval_spin.set_value(model.refresh_interval_secs as f64);
@@ -260,7 +265,7 @@ impl SimpleComponent for EtleGui {
         {
             let sender = sender.clone();
             parallel_spin.connect_value_changed(move |spin| {
-                sender.input(AppInput::SetParallelism(spin.value_as_int().max(1) as usize));
+                sender.input(AppInput::SetParallelism(spin.value_as_int().max(0) as usize));
             });
         }
         {
@@ -333,7 +338,6 @@ impl SimpleComponent for EtleGui {
             discovery_port_spin,
             discovery_timeout_spin,
             resume_check,
-            psk_entry,
             transfer_list,
             progress_bar,
             progress_label,
@@ -406,6 +410,8 @@ impl SimpleComponent for EtleGui {
             AppInput::IpcWatchStopped { generation, error } => {
                 if generation == self.watch_generation {
                     self.watching = false;
+                    self.connected = false;
+                    self.status = "offline".to_string();
                     self.push_log(format!("watch stopped: {error}"));
                 }
             }
@@ -451,7 +457,7 @@ impl SimpleComponent for EtleGui {
             }
             AppInput::SetSeedChunkSize(value) => self.seed_chunk_size = value.max(1),
             AppInput::StartSeedSelected => self.start_seed_selected(sender),
-            AppInput::SetParallelism(value) => self.download_parallelism = value.max(1),
+            AppInput::SetParallelism(value) => self.download_parallelism = value,
             AppInput::SetRequestWindow(value) => self.download_request_window = value.max(1),
             AppInput::SetDiscoveryPort(value) => self.discovery_port = value.max(1),
             AppInput::SetDiscoveryTimeout(value) => self.discovery_timeout_ms = value.max(1),
@@ -489,11 +495,21 @@ impl SimpleComponent for EtleGui {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
+        let status_detail = if self.status.is_empty()
+            || matches!(self.status.as_str(), "online" | "offline" | "idle")
+            || self.status.ends_with(" share(s)")
+        {
+            String::new()
+        } else {
+            format!(" · {}", self.status)
+        };
+
         widgets.status_label.set_text(&format!(
-            "{}{} · {} share(s)",
+            "{} · {} share(s){}{}",
             if self.connected { "online" } else { "offline" },
-            if self.watching { " · watch" } else { "" },
             self.shares.len(),
+            status_detail,
+            if self.watching { " · events on" } else { "" },
         ));
 
         // Keep text entries local while typing. They are read only when the user
@@ -512,9 +528,6 @@ impl SimpleComponent for EtleGui {
         );
         if widgets.resume_check.is_active() != self.resume {
             widgets.resume_check.set_active(self.resume);
-        }
-        if widgets.psk_entry.text().is_empty() && !self.auth_psk.is_empty() {
-            widgets.psk_entry.set_text(&self.auth_psk);
         }
         if widgets.auto_refresh_check.is_active() != self.auto_refresh {
             widgets.auto_refresh_check.set_active(self.auto_refresh);
@@ -612,6 +625,13 @@ impl EtleGui {
     }
 
     fn start_watch(&mut self, sender: ComponentSender<Self>) {
+        if self.active_socket_path.trim().is_empty() {
+            self.connected = false;
+            self.status = "offline".to_string();
+            self.push_log("event watch: empty IPC endpoint");
+            return;
+        }
+
         if self.watching {
             self.push_log("watch already active");
             return;
@@ -778,7 +798,7 @@ impl EtleGui {
         self.selected_share.and_then(|index| self.shares.get(index))
     }
 
-    fn push_log(&mut self, message: impl Into<String>) {
+    pub(super) fn push_log(&mut self, message: impl Into<String>) {
         let compact = compact_log_line(message.into());
         if self.last_activity_message.as_deref() == Some(compact.as_str()) {
             return;
@@ -883,7 +903,7 @@ impl EtleGui {
             }
             Ok(IpcResponse::Shares { shares }) => {
                 self.connected = true;
-                self.status = format!("{} share(s)", shares.len());
+                self.status = "idle".to_string();
                 self.shares = shares;
                 if self
                     .selected_share
@@ -988,11 +1008,10 @@ impl EtleGui {
                     self.push_log(format!("ipc: {error}"));
                 }
                 IpcRequestKind::Seed | IpcRequestKind::Download => {
-                    self.status = "request pending".to_string();
-                    self.push_log(format!(
-                        "{} request: {error}; waiting for daemon event or refresh",
-                        kind.label()
-                    ));
+                    self.connected = false;
+                    self.status = "request failed".to_string();
+                    self.mark_recent_running_failed(&error);
+                    self.push_log(format!("{} request failed: {error}", kind.label()));
                 }
             },
         }
@@ -1243,7 +1262,7 @@ impl EtleGui {
 
     fn sync_existing_transfer_from_share(&mut self, share: &IpcShareSummary) {
         let mode = share.mode.as_deref().unwrap_or("unknown");
-        let done = share.total_chunks > 0 && share.completed_chunks >= share.total_chunks;
+        let done = share_is_complete(share);
         let seq = self.bump_seq();
 
         if let Some(index) = self
@@ -1301,7 +1320,7 @@ impl EtleGui {
     }
 
     fn mark_seed_completed_from_share(&mut self, share: &IpcShareSummary) {
-        let completed = share.total_chunks > 0 && share.completed_chunks >= share.total_chunks;
+        let completed = share_is_complete(share);
         if !completed {
             return;
         }
@@ -1381,14 +1400,14 @@ impl EtleGui {
         };
 
         let percent = if share.total_chunks == 0 {
-            0.0
+            if share_is_complete(share) { 100.0 } else { 0.0 }
         } else {
             (share.completed_chunks as f64 / share.total_chunks as f64) * 100.0
         };
         let missing = share.total_chunks.saturating_sub(share.completed_chunks);
 
         format!(
-            "name       : {}\nshare id   : {}\nmode       : {}\nchunks     : {}/{} ({percent:.2}%)\nmissing    : {}\nsecret     : {}",
+            "Name       : {}\nShare ID   : {}\nMode       : {}\nChunks     : {}/{} ({percent:.2}%)\nMissing    : {}\nSecret key : {}",
             share.name,
             share.share_id,
             share.mode.as_deref().unwrap_or("unknown"),
@@ -1425,6 +1444,14 @@ fn is_specific_progress_detail(detail: &str) -> bool {
         || detail.contains("uploading")
         || detail.contains("writing")
         || detail.contains("saved")
+}
+
+fn share_is_complete(share: &IpcShareSummary) -> bool {
+    if share.total_chunks == 0 {
+        return matches!(share.mode.as_deref(), Some("seeding" | "completed"));
+    }
+
+    share.completed_chunks >= share.total_chunks
 }
 
 fn transfer_hidden_keys(transfer: &GuiTransfer) -> Vec<String> {
