@@ -1,19 +1,21 @@
 # ETLE examples
 
-These examples are intentionally local and deterministic enough for CI. They do
-not open TCP sockets and do not require a running `etled` daemon.
+These examples are local and deterministic enough for CI. They do not open TCP
+sockets and do not require a running `etled` daemon.
+
+Example output uses a compact `key=value` format so it is easy to compare in
+logs across Linux, macOS, and Windows.
 
 ## `local_roundtrip`
 
-Runs the modern local crypto path:
+Runs the local authenticated encrypted roundtrip:
 
 1. X25519 ephemeral key exchange
-2. transcript-bound session key
-3. PSK proof check
-4. random file key generation
-5. file-key wrapping/unwrapping
-6. chunk encryption/decryption
-7. final hash verification
+2. transcript-bound session key derivation
+3. PSK proof verification
+4. file-key generation and wrapping
+5. chunk encryption/decryption
+6. final hash verification
 
 ```sh
 cargo run --example local_roundtrip -- ./sample.bin
@@ -28,8 +30,8 @@ ETLE_EXAMPLE_PSK='test shared secret' \
 
 ## `debug_roundtrip`
 
-Same core flow, but writes a debug workspace containing the manifest and encrypted
-chunks:
+Runs the same core flow, then writes a debug workspace containing the manifest,
+encrypted chunks, and reconstructed output:
 
 ```sh
 cargo run --example debug_roundtrip -- ./sample.bin .etle-work/sample

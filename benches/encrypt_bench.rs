@@ -8,22 +8,22 @@ use etle::crypto::{
 fn bench_encrypt_chunk(c: &mut Criterion) {
     let key = generate_file_key();
     let nonce = generate_nonce();
-    let file_id = FileId([9u8; 32]);
+    let file_id = FileId([9_u8; 32]);
 
-    let mut group = c.benchmark_group("encrypt_chunk");
+    let mut group = c.benchmark_group("crypto.encrypt_chunk");
 
-    // Uji tiga ukuran chunk berbeda
     for size in [64 * 1024, 512 * 1024, 1024 * 1024] {
-        let data = vec![0u8; size];
+        let data = vec![0_u8; size];
         let aad = build_chunk_aad(file_id, 0, data.len() as u64);
 
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(
-            BenchmarkId::from_parameter(format!("{}KB", size / 1024)),
+            BenchmarkId::from_parameter(format!("{}KiB", size / 1024)),
             &size,
             |b, _| b.iter(|| encrypt_chunk(&key, nonce, &data, &aad).unwrap()),
         );
     }
+
     group.finish();
 }
 

@@ -34,31 +34,10 @@ fn main() -> anyhow::Result<()> {
 
     prepare_workspace(&workspace)?;
 
-    println!("== step 1: original ==");
     let file_id = hash_file(&input)?;
     let file_size = fs::metadata(&input)?.len();
-    println!("input: {}", input.display());
-    println!("size: {file_size} bytes");
-    println!("file_id: {file_id}");
-    println!();
-
-    println!("== step 2: chunk ==");
     let plain_chunks = read_file_chunks(&input, DEFAULT_CHUNK_SIZE)?;
-    println!("chunk_size: {} bytes", DEFAULT_CHUNK_SIZE);
-    println!("chunks: {}", plain_chunks.len());
-    for chunk in plain_chunks.iter().take(5) {
-        println!(
-            "chunk {:06}: {} bytes plaintext",
-            chunk.index,
-            chunk.data.len()
-        );
-    }
-    if plain_chunks.len() > 5 {
-        println!("... {} more chunk(s)", plain_chunks.len() - 5);
-    }
-    println!();
 
-    println!("== step 3: authenticated session ==");
     let psk = example_psk();
     let seeder = EphemeralKeypair::generate();
     let peer = EphemeralKeypair::generate();
@@ -94,10 +73,7 @@ fn main() -> anyhow::Result<()> {
         auth_tags_equal(&peer_proof, &expected_peer_proof),
         "client PSK proof failed"
     );
-    println!("psk auth: OK");
-    println!();
 
-    println!("== step 4: encrypt + persist debug workspace ==");
     let file_key = generate_file_key();
     let wrapped = wrap_file_key(&seeder_session_key, file_id, &file_key)?;
     let peer_file_key = unwrap_file_key(&peer_session_key, file_id, &wrapped)?;
@@ -108,49 +84,49 @@ fn main() -> anyhow::Result<()> {
 
     let encrypted = encrypt_file(&input, &file_key, DEFAULT_CHUNK_SIZE)?;
     write_debug_workspace(&encrypted, &workspace)?;
-    println!("manifest: {}", debug_manifest_path(&workspace).display());
-    println!("chunks_dir: {}", debug_chunks_dir(&workspace).display());
-    println!("wrapped_file_key_nonce: {:?}", wrapped.nonce);
-    println!("wrapped_file_key_size: {} bytes", wrapped.data.len());
 
-    if let Some(first) = encrypted.chunks.get(&0) {
-        println!(
-            "first encrypted chunk: {}",
-            debug_chunk_path(&workspace, 0).display()
-        );
-        println!("first encrypted chunk size: {} bytes", first.data.len());
-        println!("first encrypted bytes: {}", hex_prefix(&first.data, 16));
-    }
-    println!();
-
-    println!("== step 5: decrypt ==");
     let loaded = read_debug_workspace(&workspace)?;
     let plaintext = decrypt_to_bytes(&loaded, &peer_file_key)?;
-    println!("loaded manifest and encrypted chunks from workspace");
-    println!("decrypted bytes: {}", plaintext.len());
-    println!();
-
-    println!("== step 6: reconstruct ==");
     let output_path = workspace.join(format!("reconstructed-{}", file_name(&input)));
     fs::write(&output_path, plaintext)?;
     let output_hash = hash_file(&output_path)?;
-    println!("output: {}", output_path.display());
-    println!("output_file_id: {output_hash}");
+    anyhow::ensure!(
+        output_hash == file_id,
+        "reconstructed file hash does not match original"
+    );
 
-    if output_hash == file_id {
-        println!("status: OK, reconstructed file matches original");
-    } else {
-        anyhow::bail!("reconstructed file hash does not match original");
+    print_kv("example", "debug_roundtrip");
+    print_kv("status", "ok");
+    print_kv("input", input.display());
+    print_kv("input_size", format_args!("{file_size} bytes"));
+    print_kv("file_id", file_id);
+    print_kv("chunk_size", format_args!("{DEFAULT_CHUNK_SIZE} bytes"));
+    print_kv("chunks", plain_chunks.len());
+    print_kv("workspace", workspace.display());
+    print_kv("manifest", debug_manifest_path(&workspace).display());
+    print_kv("chunks_dir", debug_chunks_dir(&workspace).display());
+    print_kv("output", output_path.display());
+    print_kv("output_file_id", output_hash);
+    print_kv(
+        "wrapped_file_key_nonce",
+        format_args!("{:?}", wrapped.nonce),
+    );
+    print_kv(
+        "wrapped_file_key_size",
+        format_args!("{} bytes", wrapped.data.len()),
+    );
+
+    if let Some(first) = encrypted.chunks.get(&0) {
+        print_kv(
+            "first_chunk_path",
+            debug_chunk_path(&workspace, 0).display(),
+        );
+        print_kv(
+            "first_chunk_size",
+            format_args!("{} bytes", first.data.len()),
+        );
+        print_kv("first_chunk_prefix", hex_prefix(&first.data, 16));
     }
-
-    println!();
-    println!("workspace layout:");
-    println!("{}", workspace.display());
-    println!("├── manifest.bin");
-    println!("├── chunks/");
-    println!("│   ├── 000000.etle");
-    println!("│   └── ...");
-    println!("└── reconstructed-{}", file_name(&input));
 
     Ok(())
 }
@@ -187,8 +163,8 @@ fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
     let shown = bytes.len().min(max_len);
     let mut output = String::with_capacity(shown * 3);
 
-    for (i, byte) in bytes.iter().take(shown).enumerate() {
-        if i > 0 {
+    for (index, byte) in bytes.iter().take(shown).enumerate() {
+        if index > 0 {
             output.push(' ');
         }
         output.push_str(&format!("{byte:02x}"));
@@ -199,4 +175,8 @@ fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
     }
 
     output
+}
+
+fn print_kv(key: &str, value: impl std::fmt::Display) {
+    println!("{key}={value}");
 }

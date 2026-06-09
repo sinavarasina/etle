@@ -17,6 +17,7 @@ fn write_atomic(path: &Path, data: &[u8]) {
     file.write_all(data).unwrap();
     file.sync_all().unwrap();
     drop(file);
+
     #[cfg(windows)]
     let _ = fs::remove_file(path);
 
@@ -28,19 +29,15 @@ fn atomic_temp_path(path: &Path) -> PathBuf {
 }
 
 fn bench_file_write(c: &mut Criterion) {
-    let data = vec![0u8; 4096]; // ukuran tipikal state file
-    let path = std::env::temp_dir().join(format!("etle_bench_write_{}.bin", std::process::id()));
-    let mut group = c.benchmark_group("file_write");
+    let data = vec![0_u8; 4096];
+    let path = std::env::temp_dir().join(format!("etle-bench-write-{}.bin", std::process::id()));
+    let mut group = c.benchmark_group("io.file_write");
 
-    group.bench_function("fs_write_direct", |b| b.iter(|| write_direct(&path, &data)));
-
-    group.bench_function("write_file_atomic", |b| {
-        b.iter(|| write_atomic(&path, &data))
-    });
+    group.bench_function("direct", |b| b.iter(|| write_direct(&path, &data)));
+    group.bench_function("atomic", |b| b.iter(|| write_atomic(&path, &data)));
 
     group.finish();
 
-    // Bersihkan file sementara
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(atomic_temp_path(&path));
 }

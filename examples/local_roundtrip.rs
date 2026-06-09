@@ -1,8 +1,11 @@
+use std::path::PathBuf;
+
 use etle::{
     crypto::{
+        aead::SymmetricKey,
         hash::hash_file,
         key_exchange::{
-            AuthPsk, AuthRole, EphemeralKeypair, auth_tags_equal, derive_auth_tag,
+            AuthPsk, AuthRole, EphemeralKeypair, PublicKeyBytes, auth_tags_equal, derive_auth_tag,
             derive_session_key_with_transcript,
         },
         key_wrap::{generate_file_key, unwrap_file_key, wrap_file_key},
@@ -17,6 +20,7 @@ fn main() -> anyhow::Result<()> {
     let input = std::env::args()
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: cargo run --example local_roundtrip -- <file>"))?;
+    let input = PathBuf::from(input);
 
     let psk = example_psk();
     let seeder = EphemeralKeypair::generate();
@@ -26,7 +30,6 @@ fn main() -> anyhow::Result<()> {
 
     let seeder_shared = seeder.diffie_hellman(peer_public)?;
     let peer_shared = peer.diffie_hellman(seeder_public)?;
-
     let seeder_session_key =
         derive_session_key_with_transcript(seeder_shared, peer_public, seeder_public);
     let peer_session_key =
@@ -63,10 +66,13 @@ fn main() -> anyhow::Result<()> {
         "reconstructed file hash does not match original"
     );
 
-    println!("file_id: {}", encrypted.manifest.file_id);
-    println!("chunks: {}", encrypted.manifest.chunks.len());
-    println!("output: {}", output_path.display());
-    println!("local authenticated encrypted roundtrip OK");
+    print_kv("example", "local_roundtrip");
+    print_kv("status", "ok");
+    print_kv("input", input.display());
+    print_kv("output", output_path.display());
+    print_kv("file_id", encrypted.manifest.file_id);
+    print_kv("chunks", encrypted.manifest.chunks.len());
+    print_kv("chunk_size", DEFAULT_CHUNK_SIZE);
 
     Ok(())
 }
@@ -79,10 +85,10 @@ fn example_psk() -> AuthPsk {
 
 fn verify_psk_proofs(
     psk: &AuthPsk,
-    seeder_session_key: &etle::crypto::aead::SymmetricKey,
-    peer_session_key: &etle::crypto::aead::SymmetricKey,
-    peer_public: etle::crypto::key_exchange::PublicKeyBytes,
-    seeder_public: etle::crypto::key_exchange::PublicKeyBytes,
+    seeder_session_key: &SymmetricKey,
+    peer_session_key: &SymmetricKey,
+    peer_public: PublicKeyBytes,
+    seeder_public: PublicKeyBytes,
 ) -> anyhow::Result<()> {
     let peer_proof = derive_auth_tag(
         psk,
@@ -123,4 +129,8 @@ fn verify_psk_proofs(
     );
 
     Ok(())
+}
+
+fn print_kv(key: &str, value: impl std::fmt::Display) {
+    println!("{key}={value}");
 }

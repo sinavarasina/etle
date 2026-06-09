@@ -1,8 +1,4 @@
-//! Pengujian Avalanche Attack
-//!
-//! Memverifikasi bahwa perubahan 1 bit pada input kriptografi menyebabkan
-//! perubahan besar dan tidak dapat diprediksi pada output (efek avalanche).
-//! Kegagalan berarti fungsi hash/enkripsi rentan terhadap prediksi output.
+//! Avalanche effect coverage for hash and encrypted metadata changes.
 
 use etle::crypto::{
     aead::Nonce,
@@ -38,7 +34,6 @@ fn flip_bit(data: &[u8], bit_position: usize) -> Vec<u8> {
     result
 }
 
-/// Perubahan 1 bit pada plaintext harus menghasilkan ciphertext yang sangat berbeda
 #[test]
 fn single_bit_flip_causes_large_ciphertext_change() {
     let path_a = temp_file("plain-a.bin");
@@ -46,7 +41,7 @@ fn single_bit_flip_causes_large_ciphertext_change() {
 
     let original = b"Hello, this is a test payload for avalanche attack!";
     let mut modified = original.to_vec();
-    modified[0] ^= 0b0000_0001; // flip bit 0
+    modified[0] ^= 0b0000_0001;
 
     fs::write(&path_a, original).unwrap();
     fs::write(&path_b, &modified).unwrap();
@@ -66,20 +61,13 @@ fn single_bit_flip_causes_large_ciphertext_change() {
     let bytes_a = enc_a.manifest.to_bytes().unwrap();
     let bytes_b = enc_b.manifest.to_bytes().unwrap();
 
-    // Manifest (termasuk hash) harus berbeda secara signifikan
     let differing = count_differing_bits(&bytes_a, &bytes_b);
     let total_bits = bytes_a.len() * 8;
     let diff_ratio = differing as f64 / total_bits as f64;
 
-    println!(
-        "[avalanche] 1-bit flip => {differing} differing bits dari {total_bits} ({:.1}%)",
-        diff_ratio * 100.0
-    );
-
-    // Efek avalanche: minimal 20% bit berubah
     assert!(
         diff_ratio > 0.20,
-        "Efek avalanche lemah: hanya {:.1}% bit yang berubah (harusnya >20%)",
+        "weak avalanche effect: only {:.1}% bits changed, expected > 20%",
         diff_ratio * 100.0
     );
 
@@ -87,7 +75,6 @@ fn single_bit_flip_causes_large_ciphertext_change() {
     fs::remove_file(path_b).unwrap();
 }
 
-/// File ID (BLAKE3 hash) harus menunjukkan efek avalanche
 #[test]
 fn file_id_avalanche_on_single_bit_flip() {
     let path_original = temp_file("fileid-original.bin");
@@ -96,10 +83,9 @@ fn file_id_avalanche_on_single_bit_flip() {
     let data: Vec<u8> = (0..256).map(|i| i as u8).collect();
     fs::write(&path_original, &data).unwrap();
 
-    // Flip setiap bit secara bergantian dan hitung rata-rata perbedaan hash
     let original_id = hash_file(&path_original).unwrap();
     let mut total_diff_bits = 0usize;
-    let sample_bits = 16; // uji 16 posisi bit
+    let sample_bits = 16;
 
     for bit in 0..sample_bits {
         let flipped = flip_bit(&data, bit);
@@ -108,22 +94,13 @@ fn file_id_avalanche_on_single_bit_flip() {
 
         let diff = count_differing_bits(&original_id.0, &flipped_id.0);
         total_diff_bits += diff;
-        println!(
-            "[avalanche] bit {bit}: {diff}/256 bit FileId berubah ({:.1}%)",
-            diff as f64 / 256.0 * 100.0
-        );
     }
 
     let avg_diff = total_diff_bits as f64 / (sample_bits * 256) as f64;
-    println!(
-        "[avalanche] rata-rata perubahan FileId: {:.1}%",
-        avg_diff * 100.0
-    );
 
-    // BLAKE3 yang baik: rata-rata ~50% bit berubah (efek avalanche ideal)
     assert!(
         avg_diff > 0.30,
-        "FileId avalanche lemah: rata-rata hanya {:.1}% berubah",
+        "weak FileId avalanche effect: average changed bits only {:.1}%",
         avg_diff * 100.0
     );
 
@@ -131,7 +108,6 @@ fn file_id_avalanche_on_single_bit_flip() {
     fs::remove_file(path_flipped).unwrap();
 }
 
-/// Manifest serialization: perubahan kecil pada field harus menghasilkan bytes yang berbeda banyak
 #[test]
 fn manifest_hash_field_avalanche() {
     let base_manifest = Manifest {
@@ -148,7 +124,6 @@ fn manifest_hash_field_avalanche() {
         }],
     };
 
-    // Ubah 1 byte di file_id
     let mut modified = base_manifest.clone();
     modified.file_id.0[0] ^= 0x01;
 
@@ -156,16 +131,5 @@ fn manifest_hash_field_avalanche() {
     let bytes_modified = modified.to_bytes().unwrap();
 
     let diff = count_differing_bits(&bytes_base, &bytes_modified);
-    let total = bytes_base.len() * 8;
-
-    println!(
-        "[avalanche] 1-byte manifest change => {diff}/{total} bit berbeda ({:.1}%)",
-        diff as f64 / total as f64 * 100.0
-    );
-
-    // Harus ada perbedaan (minimal perubahan langsung pada field yang diubah)
-    assert!(
-        diff > 0,
-        "Manifest tidak berubah sama sekali setelah modifikasi!"
-    );
+    assert!(diff > 0, "manifest did not change after modification");
 }

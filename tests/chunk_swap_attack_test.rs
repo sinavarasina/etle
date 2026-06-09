@@ -1,13 +1,4 @@
-//! Pengujian Chunk Swapping Attack
-//!
-//! Memverifikasi bahwa sistem mendeteksi dan menolak:
-//! - Chunk yang ditukar posisinya (index salah)
-//! - Chunk yang dimodifikasi isinya
-//! - Chunk dari file yang berbeda (replay chunk)
-//! - Duplikasi chunk
-//!
-//! Keamanan bergantung pada verifikasi index + BLAKE3 hash per-chunk
-//! yang ada di Manifest.
+//! Tamper-evidence coverage for chunk swapping and replay attempts.
 
 use etle::{
     crypto::{
@@ -27,9 +18,6 @@ fn temp_file(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("etle-swap-{name}-{}", std::process::id()))
 }
 
-// ── Helper: verifikasi chunk berdasarkan manifest ──────────────────────────
-
-/// Cek apakah data chunk cocok dengan metadata yang ada di manifest
 fn verify_chunk_against_manifest(
     manifest: &Manifest,
     index: u32,
@@ -39,31 +27,26 @@ fn verify_chunk_against_manifest(
         .chunks
         .iter()
         .find(|c| c.index == index)
-        .ok_or_else(|| format!("chunk index {index} tidak ada di manifest"))?;
+        .ok_or_else(|| format!("chunk index {index} is not present in the manifest"))?;
 
-    // Verifikasi ukuran
     if data.len() as u64 != meta.encrypted_size {
         return Err(format!(
-            "ukuran chunk {index} salah: dapat {} bytes, manifest expects {} bytes",
+            "invalid chunk {index} size: got {} bytes, expected {} bytes",
             data.len(),
             meta.encrypted_size
         ));
     }
 
-    // Verifikasi BLAKE3 hash
     let hash = blake3::hash(data);
     if hash.as_bytes() != &meta.blake3_hash.0 {
         return Err(format!(
-            "hash chunk {index} tidak cocok: payload telah dimodifikasi atau ditukar"
+            "chunk {index} hash mismatch: payload was modified or swapped"
         ));
     }
 
     Ok(())
 }
 
-// ── Chunk swap detection tests ─────────────────────────────────────────────
-
-/// Menukar dua chunk (swap index) harus terdeteksi oleh verifikasi hash
 #[test]
 fn detects_swapped_chunk_order() {
     let path = temp_file("swap-order.bin");
@@ -75,9 +58,6 @@ fn detects_swapped_chunk_order() {
 
     let original_chunks = chunks.clone();
 
-    // Swap DATA antar chunk, tapi index tetap (simulasi attacker menukar isi)
-    // chunk[0].index=0 sekarang berisi data milik chunk[1]
-    // chunk[1].index=1 sekarang berisi data milik chunk[0]
     let tmp = chunks[0].data.clone();
     chunks[0].data = chunks[1].data.clone();
     chunks[1].data = tmp;
@@ -87,28 +67,20 @@ fn detects_swapped_chunk_order() {
 
     assert_ne!(
         swapped_result, normal_result,
-        "Data setelah chunk swap harus BERBEDA dari data asli"
+        "output should differ after swapping chunk data"
     );
 
-    // Verifikasi: index di dalam struct harus tidak cocok dengan posisi
-    let first_data_in_slot_0 = &chunks[0].data; // data chunk index=1
-    let expected_slot_0_data = &original_chunks[0].data; // data chunk index=0
+    let first_data_in_slot_0 = &chunks[0].data;
+    let expected_slot_0_data = &original_chunks[0].data;
 
     assert_ne!(
         first_data_in_slot_0, expected_slot_0_data,
-        "Chunk yang ditukar harus menghasilkan data slot yang berbeda"
-    );
-
-    println!(
-        "[chunk-swap] swap chunk[0]↔chunk[1]: data mismatch terdeteksi ✓\n  asli:    {:?}\n  swapped: {:?}",
-        &normal_result[..8],
-        &swapped_result[..8]
+        "swapped chunk data should change the target slot"
     );
 
     fs::remove_file(path).unwrap();
 }
 
-/// Memodifikasi 1 byte dalam data chunk harus terdeteksi oleh hash verification
 #[test]
 fn detects_modified_chunk_content_via_hash() {
     let path = temp_file("modified-chunk.bin");
@@ -126,26 +98,19 @@ fn detects_modified_chunk_content_via_hash() {
     let encrypted = encrypt_file(&path, &file_key, 12).unwrap();
     let manifest = &encrypted.manifest;
 
-    // Simulasi: attacker memodifikasi byte pertama dari chunk pertama
     let first_chunk_meta = &manifest.chunks[0];
     let mut tampered_data = vec![0xFF_u8; first_chunk_meta.encrypted_size as usize];
-    tampered_data[0] ^= 0x01; // flip 1 bit
+    tampered_data[0] ^= 0x01;
 
     let result = verify_chunk_against_manifest(manifest, 0, &tampered_data);
     assert!(
         result.is_err(),
-        "chunk yang dimodifikasi harus DITOLAK oleh verifikasi hash"
-    );
-
-    println!(
-        "[chunk-swap] chunk dimodifikasi 1 bit: DITOLAK — {} ✓",
-        result.unwrap_err()
+        "modified chunk should be rejected by hash verification"
     );
 
     fs::remove_file(path).unwrap();
 }
 
-/// Mengirim chunk dari file yang berbeda (replay attack) harus terdeteksi
 #[test]
 fn detects_chunk_from_different_file_replay() {
     let path_a = temp_file("replay-file-a.bin");
@@ -165,34 +130,24 @@ fn detects_chunk_from_different_file_replay() {
     let enc_a = encrypt_file(&path_a, &key_a, 16).unwrap();
     let enc_b = encrypt_file(&path_b, &key_b, 16).unwrap();
 
-    // File ID harus berbeda (key derivation berbeda)
     assert_ne!(
         enc_a.manifest.file_id, enc_b.manifest.file_id,
-        "File ID untuk file yang berbeda harus BERBEDA"
+        "different files should have different file IDs"
     );
 
-    // Chunk hash dari file B tidak boleh cocok dengan manifest file A
     if let (Some(chunk_a_meta), Some(chunk_b_meta)) =
         (enc_a.manifest.chunks.first(), enc_b.manifest.chunks.first())
     {
         assert_ne!(
             chunk_a_meta.blake3_hash, chunk_b_meta.blake3_hash,
-            "Hash chunk dari file berbeda tidak boleh sama (replay terdeteksi)"
+            "chunks from different files should not share the same hash"
         );
-
-        println!(
-            "[chunk-swap] file A chunk hash: {:?}\n[chunk-swap] file B chunk hash: {:?}",
-            &chunk_a_meta.blake3_hash.0[..8],
-            &chunk_b_meta.blake3_hash.0[..8]
-        );
-        println!("[chunk-swap] replay chunk dari file berbeda: hash mismatch terdeteksi ✓");
     }
 
     fs::remove_file(path_a).unwrap();
     fs::remove_file(path_b).unwrap();
 }
 
-/// Duplikasi chunk (chunk index sama dikirim dua kali) harus ditangani
 #[test]
 fn detects_duplicate_chunk_injection() {
     let path = temp_file("dup-chunk.bin");
@@ -202,12 +157,10 @@ fn detects_duplicate_chunk_injection() {
     let chunks = read_file_chunks(&path, 4).unwrap();
     assert_eq!(chunks.len(), 4);
 
-    // Simulasi: attacker menyisipkan duplikat chunk[0] di posisi yang seharusnya chunk[2]
     let mut tampered: Vec<PlainChunk> = chunks.clone();
-    // Ganti chunk index 2 dengan data chunk index 0 (tapi pertahankan index aslinya)
     tampered[2] = PlainChunk {
-        index: 2,                     // index tetap 2 (terlihat valid)
-        data: chunks[0].data.clone(), // isi adalah data dari chunk 0 (SERANGAN)
+        index: 2,
+        data: chunks[0].data.clone(),
     };
 
     let normal_output = join_chunks(&chunks);
@@ -215,25 +168,17 @@ fn detects_duplicate_chunk_injection() {
 
     assert_ne!(
         normal_output, tampered_output,
-        "Output dengan chunk duplikat yang ditukar harus BERBEDA"
+        "output should change after duplicate chunk injection"
     );
 
-    // Verifikasi bahwa chunk asli dan palsu berbeda
     assert_ne!(
         chunks[2].data, tampered[2].data,
-        "Chunk yang diganti harus berbeda isinya dari aslinya"
+        "replaced chunk data should differ from the original chunk"
     );
-
-    println!(
-        "[chunk-swap] chunk[2] diganti dengan isi chunk[0]:\n  asli:    {:?}\n  disusupi: {:?}",
-        normal_output, tampered_output
-    );
-    println!("[chunk-swap] injeksi duplikat chunk: perubahan output terdeteksi ✓");
 
     fs::remove_file(path).unwrap();
 }
 
-/// Manifest dengan index chunk yang tidak berurutan harus tetap direkonstruksi benar
 #[test]
 fn join_chunks_is_order_agnostic_by_index() {
     let path = temp_file("out-of-order.bin");
@@ -243,22 +188,18 @@ fn join_chunks_is_order_agnostic_by_index() {
     let mut chunks = read_file_chunks(&path, 4).unwrap();
     assert_eq!(chunks.len(), 3);
 
-    // Acak urutan penerimaan (simulasi out-of-order delivery)
     chunks.reverse();
 
     let result = join_chunks(&chunks);
     assert_eq!(
         result,
         data.as_slice(),
-        "join_chunks harus tetap benar meski urutan terbalik"
+        "join_chunks should reconstruct correctly from reversed input order"
     );
-
-    println!("[chunk-swap] 3 chunk diterima terbalik: join_chunks rekonstruksi BENAR ✓");
 
     fs::remove_file(path).unwrap();
 }
 
-/// Chunk dengan index di luar range manifest harus ditolak
 #[test]
 fn verify_rejects_chunk_with_out_of_range_index() {
     let manifest = Manifest {
@@ -275,17 +216,13 @@ fn verify_rejects_chunk_with_out_of_range_index() {
         }],
     };
 
-    // Kirim chunk dengan index 99 — tidak ada di manifest
     let result = verify_chunk_against_manifest(&manifest, 99, &[0u8; 8]);
-    assert!(result.is_err(), "chunk index di luar range harus DITOLAK");
-
-    println!(
-        "[chunk-swap] chunk index=99 tidak ada di manifest: DITOLAK — {} ✓",
-        result.unwrap_err()
+    assert!(
+        result.is_err(),
+        "out-of-range chunk index should be rejected"
     );
 }
 
-/// Roundtrip enkripsi-dekripsi tetap valid (baseline — serangan tidak boleh lolos)
 #[test]
 fn encrypted_chunks_roundtrip_is_tamper_evident() {
     let path = temp_file("roundtrip-integrity.bin");
@@ -302,9 +239,8 @@ fn encrypted_chunks_roundtrip_is_tamper_evident() {
 
     assert_eq!(
         decrypted, data,
-        "dekripsi dari file yang tidak dimodifikasi harus identik"
+        "decrypting an unmodified encrypted file should reproduce the original data"
     );
-    println!("[chunk-swap] roundtrip integritas enkripsi: VALID ✓");
 
     fs::remove_file(path).unwrap();
 }
