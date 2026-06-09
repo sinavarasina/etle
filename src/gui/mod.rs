@@ -3,6 +3,7 @@ pub mod format;
 pub mod ipc;
 pub mod model;
 pub mod progress;
+pub mod style;
 pub mod widgets;
 
 use relm4::RelmApp;

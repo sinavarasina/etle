@@ -18,6 +18,7 @@ use super::{
     ipc::{spawn_auto_refresh_loop, spawn_ipc_command, spawn_ipc_watch},
     model::{AppInput, GuiInit, GuiTransfer, IpcRequestKind, TransferKind, TransferStatus},
     progress::{TaskProgressSnapshot, parse_task_progress_debug},
+    style,
     widgets::{
         GuiWidgets, build_activity_page, build_download_page, build_library_page, build_seed_page,
         build_settings_page, library_signature, refill_library_list, refill_seed_list,
@@ -46,7 +47,10 @@ impl SimpleComponent for EtleGui {
         window: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        style::install_platform_style();
+
         let model = EtleGui::new(init);
+        window.add_css_class("etle-window");
 
         let outer_scroll = gtk::ScrolledWindow::builder()
             .hexpand(true)
@@ -55,8 +59,10 @@ impl SimpleComponent for EtleGui {
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .build();
         window.set_child(Some(&outer_scroll));
+        outer_scroll.add_css_class("etle-main-scroll");
 
         let root = gtk::Box::new(Orientation::Vertical, 8);
+        root.add_css_class("etle-root");
         root.set_margin_top(8);
         root.set_margin_bottom(8);
         root.set_margin_start(8);
@@ -64,6 +70,7 @@ impl SimpleComponent for EtleGui {
         outer_scroll.set_child(Some(&root));
 
         let header = gtk::Box::new(Orientation::Vertical, 6);
+        header.add_css_class("etle-header");
         root.append(&header);
 
         let header_main = gtk::Box::new(Orientation::Horizontal, 6);
@@ -84,6 +91,7 @@ impl SimpleComponent for EtleGui {
         header_main.append(&socket_entry);
 
         let header_actions = gtk::Box::new(Orientation::Horizontal, 6);
+        header_actions.add_css_class("etle-header-actions");
         header_actions.set_halign(gtk::Align::End);
         header.append(&header_actions);
 

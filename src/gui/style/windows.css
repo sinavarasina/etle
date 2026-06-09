@@ -1,0 +1,162 @@
+window.etle-window {
+    background-color: #f3f3f3;
+    color: #1f1f1f;
+    font-family: "Segoe UI Variable Text", "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 10pt;
+}
+
+.etle-main-scroll,
+.etle-root {
+    background-color: #f3f3f3;
+    color: #1f1f1f;
+}
+
+.etle-header {
+    background-color: #f3f3f3;
+    padding: 2px 2px 6px 2px;
+}
+
+.etle-header-actions {
+    margin-top: 2px;
+}
+
+frame {
+    background-color: #ffffff;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+    padding: 12px;
+    margin: 4px;
+}
+
+frame>label {
+    color: #424242;
+    font-weight: 600;
+    padding: 0 4px;
+}
+
+button {
+    min-height: 30px;
+    padding: 5px 12px;
+    border: 1px solid rgba(0, 0, 0, 0.14);
+    border-radius: 4px;
+    background-color: #fbfbfb;
+    color: #1f1f1f;
+    box-shadow: none;
+    text-shadow: none;
+}
+
+button:hover {
+    background-color: #f6f6f6;
+    border-color: rgba(0, 0, 0, 0.22);
+}
+
+button:active {
+    background-color: #ececec;
+    border-color: rgba(0, 0, 0, 0.28);
+}
+
+button:disabled {
+    background-color: #f4f4f4;
+    color: #9a9a9a;
+    border-color: rgba(0, 0, 0, 0.08);
+}
+
+button.suggested-action {
+    background-color: #0067c0;
+    color: #ffffff;
+    border-color: #0067c0;
+}
+
+button.suggested-action:hover {
+    background-color: #0f6cbd;
+}
+
+button.suggested-action:active {
+    background-color: #005a9e;
+}
+
+button.destructive-action {
+    color: #b3261e;
+    border-color: rgba(179, 38, 30, 0.38);
+}
+
+button.destructive-action:hover {
+    background-color: #fff1f0;
+    border-color: rgba(179, 38, 30, 0.55);
+}
+
+button.destructive-action:active {
+    background-color: #fde2df;
+}
+
+entry,
+passwordentry,
+spinbutton,
+textview {
+    min-height: 30px;
+    padding: 5px 8px;
+    border: 1px solid rgba(0, 0, 0, 0.20);
+    border-radius: 4px;
+    background-color: #ffffff;
+    color: #1f1f1f;
+    box-shadow: none;
+}
+
+entry:focus,
+passwordentry:focus,
+spinbutton:focus,
+textview:focus {
+    border-color: #0067c0;
+    box-shadow: inset 0 -2px #0067c0;
+}
+
+checkbutton {
+    min-height: 28px;
+}
+
+stackswitcher button {
+    min-height: 32px;
+    padding: 6px 16px;
+    border-radius: 5px;
+}
+
+listbox {
+    background-color: transparent;
+}
+
+listbox row {
+    margin: 2px;
+    padding: 2px;
+    border-radius: 6px;
+}
+
+listbox row:hover {
+    background-color: #f5f5f5;
+}
+
+listbox row:selected {
+    background-color: #e6f2ff;
+    color: #000000;
+}
+
+progressbar trough {
+    min-height: 4px;
+    border-radius: 999px;
+    background-color: #e5e5e5;
+    border: none;
+}
+
+progressbar progress {
+    min-height: 4px;
+    border-radius: 999px;
+    background-color: #0067c0;
+}
+
+.dim-label {
+    color: #666666;
+}
+
+selection {
+    background-color: #0067c0;
+    color: #ffffff;
+}
