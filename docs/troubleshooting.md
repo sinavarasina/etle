@@ -2,13 +2,7 @@
 
 ## Manual Peer Works, Discovery Fails
 
-If this works:
-
-```bash
-etle-cli download --share-id <ID> --peer 192.168.1.15:7000
-```
-
-but discovery does not, the transfer layer is fine. Check UDP discovery.
+If explicit `--peer` works but discovery does not, the transfer layer is fine. Check UDP discovery.
 
 On Linux seeder:
 
@@ -43,6 +37,7 @@ If there is `share not found locally`:
 - wrong `share_id`
 - wrong library root
 - share has no descriptor/secret/chunks
+- share was deleted from this daemon library
 - stale daemon
 
 ## Windows Finds Itself
@@ -115,7 +110,14 @@ pkg-config --modversion gtk4
 
 If that fails, install GTK4 development packages.
 
-Windows CI uses MSYS2 UCRT64. Local Windows builds should use the same environment when possible.
+Windows CI uses MSYS2 UCRT64. Local Windows builds should use the same environment when possible:
+
+```text
+mingw-w64-ucrt-x86_64-rust
+mingw-w64-ucrt-x86_64-gcc
+mingw-w64-ucrt-x86_64-pkgconf
+mingw-w64-ucrt-x86_64-gtk4
+```
 
 ## Stale Daemon
 
@@ -130,3 +132,24 @@ Stop old daemon before testing a new binary:
 ```bash
 pkill etled
 ```
+
+On Windows, check Task Manager or PowerShell:
+
+```powershell
+Get-Process etled -ErrorAction SilentlyContinue
+```
+
+## `--locked` Wants to Update `Cargo.lock`
+
+CI intentionally uses `--locked`. If local checks or CI fail with a lockfile error after editing `Cargo.toml`, regenerate and commit the lockfile:
+
+```bash
+cargo generate-lockfile
+git add Cargo.toml Cargo.lock
+```
+
+Do not remove `--locked` from CI just to hide the mismatch.
+
+## Delete Does Not Appear in GUI
+
+Make sure CLI, GUI, and daemon are rebuilt from the same commit. Delete uses IPC variants, so mixing old daemon binaries with new GUI/CLI binaries can make the operation appear broken.

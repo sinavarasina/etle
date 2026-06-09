@@ -7,6 +7,8 @@ This document describes the full transfer flow from seeder to downloader.
 ```text
 Seeder: has descriptor, secret, and chunks.
 Downloader: wants a share_id.
+Daemon: owns local library state and worker tasks.
+CLI/GUI: sends IPC commands to daemon.
 ```
 
 ## Seeder Startup
@@ -19,6 +21,7 @@ Downloader: wants a share_id.
 5. Daemon binds TCP listener.
 6. Daemon starts discovery server.
 7. Daemon starts IPC listener.
+8. Daemon publishes ServerStarted event.
 ```
 
 ## Download Startup
@@ -31,6 +34,7 @@ Downloader: wants a share_id.
    - manual peers
    - discovery results
 5. Daemon starts transfer job.
+6. Daemon emits queued/progress events.
 ```
 
 ## Session Setup
@@ -69,12 +73,13 @@ Downloader: wants a share_id.
 3. Downloader sends RequestChunk { index }.
 4. Seeder checks availability.
 5. Seeder reads encrypted chunk.
-6. Seeder sends Chunk { index, data }.
+6. Seeder sends Chunk { index, data } or raw chunk frame.
 7. Downloader hashes encrypted data with BLAKE3.
 8. Downloader compares with metadata.
 9. If valid:
    a. write chunk to local chunk store
    b. mark progress complete
+   c. emit progress event
 10. If invalid:
    a. reject chunk
    b. retry from same/other peer according to policy
@@ -93,6 +98,8 @@ Downloader: wants a share_id.
 8. CLI/GUI displays success.
 ```
 
+Local share deletion is not part of the network transfer protocol. It is a daemon IPC operation that removes local share state after user confirmation in CLI/GUI flows.
+
 ## Error Handling
 
 Common fatal errors:
@@ -105,6 +112,7 @@ Common fatal errors:
 - chunk verification failed after retry limit
 - missing chunk with no provider
 - reconstruction hash mismatch
+- requested local share no longer exists
 
 Common non-fatal errors:
 
@@ -112,3 +120,4 @@ Common non-fatal errors:
 - one chunk request fails and is retried
 - discovery response cannot be decoded
 - discovery finds duplicate peer
+- GUI event subscription disconnects and reconnects

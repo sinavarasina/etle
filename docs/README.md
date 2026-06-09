@@ -1,6 +1,6 @@
 # ETLE Documentation
 
-This folder documents the current ETLE codebase, algorithms, data formats, and release workflow.
+This folder documents the current ETLE codebase, algorithms, data formats, daemon/IPC model, GUI, and release workflow.
 
 Recommended reading order:
 
@@ -23,3 +23,5 @@ Recommended reading order:
 17. `troubleshooting.md`
 
 ETLE is experimental. The documentation describes the current project behavior and target direction, not a stable public protocol guarantee.
+
+Keep `README.md` focused on high-level usage. Keep detailed implementation, release, and troubleshooting notes in this directory.

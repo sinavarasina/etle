@@ -12,6 +12,7 @@ ETLE aims to provide:
 - descriptor/share identity checks
 - optional PSK-based MITM resistance
 - protection against accidental wrong-share/wrong-chunk use
+- daemon-mediated local library operations instead of arbitrary-path destructive actions
 
 ## Non-goals
 
@@ -25,6 +26,7 @@ ETLE does not currently provide:
 - malicious peer reputation
 - formal audit guarantees
 - production hardening against DoS
+- secure deletion/wiping of local disk data
 
 ## Assets
 
@@ -48,6 +50,12 @@ Network-visible:
 - share ID being queried
 - transfer timing/size
 - discovery packets
+
+Local operational state:
+
+- IPC socket/pipe endpoint
+- daemon library root
+- progress and mode files
 
 ## Threats
 
@@ -103,11 +111,14 @@ Still needed:
 
 If local attacker can read `secret.etlekey`, they can decrypt the share.
 
+If local attacker can access the daemon IPC endpoint, they may be able to request local library operations such as list, seed, download, or delete.
+
 Mitigations not yet implemented:
 
 - encrypted local secret store
 - OS keychain integration
 - passphrase-protected library
+- stronger IPC authorization model
 
 ## Security Checklist for Changes
 
@@ -119,4 +130,6 @@ When changing protocol/crypto/state code, check:
 - Is every chunk verified before progress is updated?
 - Is AAD stable and unambiguous?
 - Does this change require a protocol version bump?
+- Does this change require an IPC compatibility note?
+- Does any delete/write operation operate only under the expected library root?
 - Does this change break backward compatibility?

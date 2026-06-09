@@ -24,6 +24,49 @@ Core ideas:
 - Optional PSK authentication can bind the X25519 transcript against active MITM.
 - Verified encrypted chunks are stored in a reusable local library.
 - A downloaded share can become seedable again when the local library has the needed descriptor, key, and chunks.
+- Local library shares can be deleted through the daemon IPC path.
+
+## Download
+
+Prebuilt portable packages are available from the [latest GitHub release](https://github.com/sinavarasina/etle/releases/latest). Use that page if you only want to run ETLE. Build from source when developing or testing unreleased changes.
+
+Release packages include `etle-cli`, `etled`, `etle-gui`, package notes, build information, and checksums.
+
+## Screenshots
+
+### Linux
+
+<p>
+  <img src="screenshoot/linux/etle-gui_library.png" alt="ETLE GUI Library page on Linux" width="49%">
+  <img src="screenshoot/linux/etle-gui_activity.png" alt="ETLE GUI Activity page on Linux" width="49%">
+</p>
+
+<details>
+<summary>More Linux screenshots</summary>
+
+<p>
+  <img src="screenshoot/linux/fullscreen_screenshoot_etle-gui_activity.png" alt="ETLE GUI Activity page fullscreen on Linux" width="100%">
+  <img src="screenshoot/linux/fullscreen_screenshoot_while_transfer.png" alt="ETLE GUI transfer fullscreen on Linux" width="100%">
+</p>
+
+</details>
+
+### Windows
+
+<p>
+  <img src="screenshoot/windows/etle-gui_library.png" alt="ETLE GUI Library page on Windows" width="49%">
+  <img src="screenshoot/windows/etle-gui_activity.png" alt="ETLE GUI Activity page on Windows" width="49%">
+</p>
+
+<details>
+<summary>More Windows screenshots</summary>
+
+<p>
+  <img src="screenshoot/windows/etle-gui_library_selected.png" alt="ETLE GUI selected library share on Windows" width="100%">
+  <img src="screenshoot/windows/fullscreen_screenshoot_while_transfer.png" alt="ETLE GUI transfer fullscreen on Windows" width="100%">
+</p>
+
+</details>
 
 ## Status
 
@@ -32,30 +75,31 @@ ETLE is still experimental. It is suitable for local development, LAN testing, a
 Implemented or partially implemented:
 
 - Crypto core: BLAKE3, XChaCha20-Poly1305, X25519, PSK auth proof, wrapped file key.
-- Protocol: framed bincode messages, hello, capabilities, key exchange, auth proof, manifest, have map, chunk request/response, error.
-- State/library: local share library under an ETLE root directory.
-- Daemon: TCP P2P listener, IPC listener, LAN discovery server.
-- CLI: seed, list, download, fresh download, ping/shutdown daemon, version/build info.
-- GUI: GTK4/Relm4 desktop client.
+- Protocol: framed `bincode-next` messages, hello, capabilities, key exchange, auth proof, manifest, have map, chunk request/response, error.
+- State/library: local share library under an ETLE root directory, including local share deletion.
+- Daemon: TCP P2P listener, IPC listener, LAN discovery server, progress/events, and delete/share diagnostics.
+- CLI: seed, list, delete, download, fresh download, ping/shutdown/watch daemon, version/build info.
+- GUI: GTK4/Relm4 desktop client with library, seed, download, settings, activity, inline delete confirmation, and Windows-specific styling.
 - Release packaging: Linux/macOS `.tar.gz`, Windows portable `.zip` with GTK runtime bundle.
-- CI/release: fmt, check, test, clippy, GUI build, release artifact packaging, checksums.
+- CI/release: fmt, check, test, clippy, GUI build, release artifact packaging, checksums, and security audit workflow.
 
 Still not final:
 
 - Public tracker/DHT is not implemented.
 - NAT traversal is not implemented.
-- Protocol compatibility is not stable.
-- GUI/UX is still evolving.
-- Security has not been independently audited.
 
 ## Repository Layout
 
 ```text
 .
 ├── Cargo.toml
+├── Cargo.lock
 ├── README.md
 ├── PLAN.md
+├── build.rs
 ├── docs/
+├── examples/
+├── benches/
 ├── src/
 │   ├── bin/
 │   │   ├── etle-cli.rs
@@ -99,7 +143,7 @@ sudo dnf install gtk4-devel pkgconf-pkg-config
 doas emerge gui-libs/gtk dev-util/pkgconf
 ```
 
-Windows GUI builds currently use MSYS2 UCRT64 in CI:
+Windows GUI builds use MSYS2 UCRT64 in CI and release packaging:
 
 ```text
 mingw-w64-ucrt-x86_64-rust
@@ -114,13 +158,24 @@ macOS GUI builds use Homebrew:
 brew install gtk4 pkg-config
 ```
 
+`Cargo.lock` is part of the release input. If `Cargo.toml` changes, regenerate and commit `Cargo.lock` before running CI commands with `--locked`.
+
 ## Local Build
+
+Run the same baseline checks used by CI:
 
 ```bash
 cargo fmt --all -- --check
 cargo check --locked --all-targets
 cargo test --locked --all-targets
 cargo clippy --locked --all-targets --all-features -- -D warnings
+```
+
+Check the GUI-only feature set:
+
+```bash
+cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+cargo clippy --locked --no-default-features --features gui-relm4 --bin etle-gui -- -D warnings
 ```
 
 Build CLI and daemon:
@@ -143,6 +198,12 @@ Check build information:
 ./target/release/etle-gui --version
 ```
 
+Optional benchmark compile check:
+
+```bash
+cargo bench --no-run
+```
+
 ## Quick Start
 
 Start the daemon:
@@ -161,6 +222,12 @@ List local shares:
 
 ```bash
 ./target/release/etle-cli list
+```
+
+Delete a local library share:
+
+```bash
+./target/release/etle-cli delete --share-id <64_HEX_SHARE_ID>
 ```
 
 Download using LAN discovery:
@@ -199,9 +266,9 @@ Run the GUI:
 Default ports:
 
 ```text
-P2P TCP:      7000
+P2P TCP:        7000
 Discovery UDP: 37037
-Multicast:   239.255.0.86
+Multicast:     239.255.0.86
 ```
 
 Default library root:
@@ -242,6 +309,8 @@ The GUI PSK field applies to download/client commands. A running daemon server P
 
 ## Release Artifacts
 
+Prebuilt packages for normal use are published on the [latest GitHub release](https://github.com/sinavarasina/etle/releases/latest).
+
 Release tags should use semantic version format:
 
 ```text
@@ -251,16 +320,16 @@ vMAJOR.MINOR.PATCH
 Example:
 
 ```bash
-git tag -a v1.0.0 -m "ETLE v1.0.0"
-git push origin v1.0.0
+git tag -a v1.0.1 -m "ETLE v1.0.1"
+git push origin v1.0.1
 ```
 
 Expected assets:
 
 ```text
-etle-v1.0.0-x86_64-unknown-linux-gnu-portable.tar.gz
-etle-v1.0.0-aarch64-apple-darwin-portable.tar.gz
-etle-v1.0.0-x86_64-pc-windows-gnu-portable.zip
+etle-v1.0.1-x86_64-unknown-linux-gnu-portable.tar.gz
+etle-v1.0.1-aarch64-apple-darwin-portable.tar.gz
+etle-v1.0.1-x86_64-pc-windows-gnu-portable.zip
 CHECKSUMS.txt
 ```
 
@@ -277,12 +346,19 @@ README.md
 LICENSE*
 ```
 
+Windows portable packages also bundle the GTK runtime files needed by `etle-gui`.
+
 ## Documentation
 
 Detailed documentation lives in `docs/`:
 
 - `docs/architecture.md`
 - `docs/code-map.md`
+- `docs/algorithms.md`
+- `docs/data-formats.md`
+- `docs/transfer-flow.md`
+- `docs/swarm-and-resume.md`
+- `docs/security-model.md`
 - `docs/crypto.md`
 - `docs/protocol.md`
 - `docs/library-state.md`

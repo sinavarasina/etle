@@ -37,6 +37,16 @@ List local shares known by the daemon:
 etle-cli list
 ```
 
+## Delete
+
+Delete one share from the daemon-owned local library:
+
+```bash
+etle-cli delete --share-id <64_HEX_SHARE_ID>
+```
+
+This removes ETLE metadata, secret state, progress, and encrypted chunks for that local share. It does not delete remote copies and is not intended to remove already reconstructed output files outside the share state.
+
 ## Download by Discovery
 
 If no `--peer` is supplied, the daemon/client flow can try LAN discovery for the requested share:
@@ -63,6 +73,8 @@ etle-cli download \
   --parallel 4
 ```
 
+`--parallel 0` means automatic worker count based on resolved peers. `--parallel 1` gives sequential fallback behavior.
+
 ## Output Path
 
 ```bash
@@ -72,6 +84,8 @@ etle-cli download \
   --output ./received.bin
 ```
 
+If no output is supplied, the daemon uses the library output location based on the manifest file name.
+
 ## Fresh Download
 
 A fresh download ignores existing reusable verified chunks for that job. Use this when testing a clean transfer path.
@@ -80,14 +94,10 @@ A fresh download ignores existing reusable verified chunks for that job. Use thi
 etle-cli download \
   --share-id <64_HEX_SHARE_ID> \
   --peer 192.168.1.15:7000 \
-  --fresh
+  --no-resume
 ```
 
-If your CLI exposes this as a separate subcommand, check:
-
-```bash
-etle-cli --help
-```
+The regular `download` command reuses verified chunks by default.
 
 ## PSK Authentication
 
@@ -100,6 +110,8 @@ etle-cli download \
   --auth-psk "same-password"
 ```
 
+If `--auth-psk` is omitted, the CLI can use `ETLE_AUTH_PSK` or the configured `auth_psk` value.
+
 ## IPC Socket
 
 Use a non-default daemon IPC path:
@@ -108,12 +120,26 @@ Use a non-default daemon IPC path:
 etle-cli --ipc-socket /path/to/etled.sock list
 ```
 
+On Windows the default IPC endpoint is the named pipe:
+
+```text
+\\.\pipe\etled
+```
+
 ## Ping and Shutdown
 
 ```bash
-etle-cli ping
-etle-cli shutdown
+etle-cli daemon ping
+etle-cli daemon shutdown
 ```
+
+Watch daemon events and transfer progress:
+
+```bash
+etle-cli daemon watch
+```
+
+The top-level `list` command and `daemon list` both query daemon shares.
 
 ## Help
 
@@ -123,4 +149,5 @@ The CLI help is the source of truth for exact flags in the current build:
 etle-cli --help
 etle-cli download --help
 etle-cli seed --help
+etle-cli daemon --help
 ```

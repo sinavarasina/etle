@@ -27,7 +27,7 @@ Done:
 - [x] `FileEntry`.
 - [x] `CryptoSuite`.
 - [x] Deterministic descriptor share ID computation.
-- [x] Descriptor serialization/deserialization.
+- [x] Descriptor serialization/deserialization using `bincode-next`.
 - [x] Single-file package layout.
 - [x] Directory package layout.
 - [x] Logical package stream chunking.
@@ -50,7 +50,7 @@ Goal:
 
 Done:
 
-- [x] Length-prefixed bincode message framing.
+- [x] Length-prefixed `bincode-next` message framing.
 - [x] Empty frame rejection.
 - [x] Oversized frame rejection.
 - [x] Trailing bytes rejection.
@@ -103,22 +103,25 @@ Done:
 - [x] Per-share encrypted chunk storage.
 - [x] Per-share progress tracking.
 - [x] Share listing.
+- [x] Local share deletion from the daemon library.
 - [x] Seed from local library state.
 - [x] Download into local library state.
 - [x] Reuse verified chunks when resuming/downloading.
 - [x] Daemon foreground mode.
 - [x] Multi-share daemon serving.
 - [x] IPC socket/pipe path handling.
-- [x] IPC commands for seed/list/download/ping/shutdown.
-- [x] Event subscription for progress.
+- [x] IPC commands for seed/list/delete/download/ping/shutdown.
+- [x] Event subscription for progress and share changes.
 - [x] Broken-pipe tolerant IPC progress handling.
 - [x] Startup banner showing local shares and chunk availability.
+- [x] Daemon logs for destructive local library operations.
 
 Definition of Done:
 
 - [x] `etled serve` can run as the central local process.
 - [x] `etle-cli` can control the daemon through IPC.
 - [x] A completed local share is seedable without the original input path.
+- [x] A local share can be removed from the daemon library through CLI/GUI IPC.
 
 ## Sprint 4 — LAN Discovery
 
@@ -169,14 +172,14 @@ Done:
 - [x] Retry/fallback behavior for failed peers.
 - [x] Per-chunk source progress logging.
 - [x] Completed chunks can be reused.
+- [x] Test coverage for partial seeders, fallback, and parallel download paths.
 
 Still needs hardening:
 
-- [ ] More tests for peer failure during transfer.
-- [ ] More tests for partial seeder behavior.
 - [ ] Better dynamic peer hot-add design.
 - [ ] Clearer worker metrics in logs/GUI.
 - [ ] More backoff and peer scoring.
+- [ ] More stress testing under peer churn.
 
 Definition of Done:
 
@@ -199,22 +202,25 @@ Done:
 - [x] Library/share view.
 - [x] Seed action through daemon IPC.
 - [x] Download action through daemon IPC.
+- [x] Delete share action through daemon IPC.
+- [x] Inline delete confirmation panel.
 - [x] Peer/discovery settings fields.
 - [x] PSK field for client/download side.
 - [x] Progress/log panel.
 - [x] Daemon sync/refresh.
 - [x] Responsive layout improvements.
 - [x] Windows GTK runtime packaging.
+- [x] Windows-only Fluent-like styling and native decoration environment setup.
 
 Still needs polish:
 
 - [ ] Clearer PSK labeling between daemon/server PSK and download/client PSK.
 - [ ] Better empty/error states.
 - [ ] Better long-running task cancellation UX.
-- [ ] More consistent cross-platform fonts/icons.
+- [ ] More consistent cross-platform icons.
 - [ ] GUI integration tests or snapshot/manual checklist.
 
 Definition of Done:
 
-- [x] GUI can operate the daemon for basic seed/download flows.
+- [x] GUI can operate the daemon for basic seed/download/delete flows.
 - [ ] GUI UX is stable enough for non-developer users.

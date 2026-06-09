@@ -8,15 +8,15 @@ Most protocol messages use:
 
 ```text
 u32 big-endian frame length
-bincode payload
+bincode-next payload
 ```
 
 The codec rejects:
 
 - empty frames
 - oversized frames
-- trailing bytes after bincode decode
-- invalid bincode payloads
+- trailing bytes after decode
+- invalid `bincode-next` payloads
 
 The protocol also has a raw chunk frame capability for efficient chunk transfer.
 
@@ -51,6 +51,8 @@ Chunk { index, data }
 Error { message }
 ```
 
+IPC has its own command/event model and is not the same as the P2P wire message set.
+
 ## Typical Flow
 
 ```text
@@ -76,6 +78,8 @@ client -> server: RequestChunk(index)
 server -> client: Chunk(index, encrypted_data)
 ```
 
+With raw chunk frame support, the chunk payload may be sent through the optimized raw chunk path instead of the normal enum payload path.
+
 ## Validation
 
 The downloader must validate:
@@ -87,6 +91,14 @@ The downloader must validate:
 5. AEAD decrypt succeeds with expected AAD.
 6. Reconstructed file/folder hash matches metadata.
 
+The decoder must validate:
+
+1. Frame size is non-zero and within the limit.
+2. Decode consumes the whole frame.
+3. Unexpected message kinds fail closed.
+
 ## Compatibility Policy
 
 The wire protocol is not stable yet. Any incompatible change should bump `ETLE_WIRE_PROTOCOL_VERSION` and be documented in release notes.
+
+IPC compatibility is also not stable yet. CLI, GUI, and daemon should be updated together when IPC command/response/event variants change.

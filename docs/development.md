@@ -2,6 +2,8 @@
 
 ## Local Commands
 
+Quick checks:
+
 ```bash
 cargo fmt
 cargo check
@@ -22,12 +24,19 @@ GUI check:
 
 ```bash
 cargo check --locked --no-default-features --features gui-relm4 --bin etle-gui
+cargo clippy --locked --no-default-features --features gui-relm4 --bin etle-gui -- -D warnings
 ```
 
 GUI build:
 
 ```bash
 cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
+```
+
+Benchmark compile check:
+
+```bash
+cargo bench --no-run
 ```
 
 ## Running a Local Demo
@@ -54,6 +63,18 @@ cargo run --bin etle-cli -- download \
   --peer 127.0.0.1:7000
 ```
 
+Delete a test share:
+
+```bash
+cargo run --bin etle-cli -- delete --share-id <64_HEX_SHARE_ID>
+```
+
+GUI demo:
+
+```bash
+cargo run --no-default-features --features gui-relm4 --bin etle-gui
+```
+
 ## Logging
 
 Use `-v` for verbose daemon logs:
@@ -69,14 +90,17 @@ Verbose logs are especially useful for:
 - key exchange
 - chunk progress
 - peer failures
+- destructive local library actions
 
 ## Code Style
 
 - Prefer explicit errors over silent failure.
 - Keep network input validation strict.
-- Keep noisy logs behind verbose mode.
+- Keep noisy logs behind verbose mode unless the operation is destructive or critical.
 - Keep release workflow deterministic and easy to inspect.
 - Keep `README.md` high-level and put detailed internals in `docs/`.
+- Keep CLI/GUI/daemon IPC variants documented when they change.
+- Keep platform-specific GUI styling isolated under `src/gui/style/`.
 
 ## Testing Areas
 
@@ -87,7 +111,9 @@ Important tests to keep or expand:
 - descriptor deterministic share ID
 - protocol frame rejection
 - discovery local seeder test
-- IPC command tests
+- IPC command tests, including share deletion
 - resume/progress tests
+- partial seeder tests
 - parallel download tests
 - GUI build checks
+- Windows named-pipe/default-path checks

@@ -2,7 +2,7 @@
 
 This document describes ETLE data structures and binary files conceptually.
 
-The exact serialization currently uses Rust structs and bincode. The public format is not stable yet.
+The exact serialization currently uses Rust structs and `bincode-next`. The public format is not stable yet.
 
 ## ShareId
 
@@ -119,7 +119,8 @@ Meaning:
 
 - Public share metadata.
 - Enough to verify and reconstruct a share.
-- Does not contain the file key.
+- Does not contain the file key or PSK.
+- Encoded with `bincode-next` for current internal storage/wire use.
 
 ## CryptoSuite
 
@@ -172,6 +173,8 @@ Serialized local state.
 
 Encrypted chunk bytes.
 
+Deleting a share removes the local per-share directory containing these files.
+
 ## Stability Warning
 
-These files are project-internal and may change until ETLE declares a stable format versioning policy.
+These files are project-internal and may change until ETLE declares a stable format versioning policy. Serialization crate or protocol changes may require rebuilding CLI, GUI, and daemon together.

@@ -29,7 +29,7 @@ ETLE/
 └── user-visible files may also live here
 ```
 
-The exact platform path may differ, but the conceptual ownership is the same.
+On Windows the default IPC endpoint is a named pipe, so the socket file shown above is Unix-only. The local library ownership model is otherwise the same.
 
 ## Share Modes
 
@@ -86,3 +86,20 @@ Resume works by:
 ## Seed After Download
 
 After all chunks are verified and the secret key exists, the local peer can serve those chunks to other peers.
+
+## Delete Share
+
+A share can be removed from the local daemon library through IPC:
+
+```bash
+etle-cli delete --share-id <64_HEX_SHARE_ID>
+```
+
+The daemon removes the local per-share directory under `.etle/library/<share_id>/`. This deletes local descriptor, secret, state, progress, and encrypted chunks for that share.
+
+Deletion does not:
+
+- remove copies from other peers
+- invalidate the share ID globally
+- securely wipe disk blocks
+- delete arbitrary paths outside the share directory

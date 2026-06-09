@@ -20,6 +20,8 @@ magic
 share_id
 ```
 
+The discovery client sends to broadcast, multicast, and loopback targets according to configured options.
+
 ## Response
 
 A seeder responds with:
@@ -44,64 +46,32 @@ If the daemon listens on:
 0.0.0.0:7000
 ```
 
-the discovery response may advertise an unspecified address. The client resolves that using the UDP response source IP.
-
-Example:
-
-```text
-response source: 192.168.1.15:37037
-listen_addr:     0.0.0.0:7000
-resolved peer:   192.168.1.15:7000
-```
+then discovery may return an unspecified listen address. The client resolves it using the UDP response source address so the peer can connect to the actual interface address.
 
 ## Verbose Diagnostics
 
-With `etled -v serve`, discovery server diagnostics should show:
+Run the daemon with:
+
+```bash
+etled -v serve
+```
+
+Useful messages include:
 
 ```text
-[discovery] server started ...
-[discovery] udp packet from ...
-[discovery] query from ... share_id=...
+[discovery] query from ...
+[discovery] drop: share not found locally ...
 [discovery] responding to ...
 [discovery] response sent ...
 ```
 
-Common drops:
-
-```text
-drop: decode failed
-drop: not a query
-drop: bad magic
-drop: share not found locally
-```
-
 ## Troubleshooting
 
-Manual TCP works but discovery fails:
+If explicit `--peer` works but discovery fails, the transfer layer is probably fine. Check:
 
-```bash
-etle-cli download --share-id <ID> --peer 192.168.1.15:7000
-```
-
-If manual peer works, the P2P transfer path is fine and the issue is discovery.
-
-Check:
-
-- daemon is running
-- correct library root
-- correct share ID
-- UDP 37037 reachable
-- both devices on same LAN
-- router/AP does not block broadcast/multicast
-- OS firewall allows UDP 37037
-- no stale daemon process
-- `etled -v serve` discovery logs
-
-Useful Linux commands:
-
-```bash
-ss -Hulpn | grep ':37037'
-ss -Hltnp | grep ':7000'
-ip -4 addr
-ip route
-```
+- discovery UDP port
+- firewall rules
+- multicast/broadcast support on the LAN
+- wrong `share_id`
+- stale daemon with old library root
+- local share was deleted or no longer has descriptor/secret/chunks

@@ -12,12 +12,13 @@ Responsibilities:
 
 - Parse daemon CLI arguments.
 - Load config/env defaults.
-- Select library root.
+- Select library root and IPC endpoint.
 - Start TCP P2P listener.
 - Start UDP discovery server unless disabled.
 - Start IPC listener unless disabled.
-- Print startup banner.
+- Print startup banner and supported IPC commands.
 - Pass PSK and logging settings into transfer/discovery layers.
+- Publish server start/stop events.
 
 ### `src/bin/etle-cli.rs`
 
@@ -26,10 +27,10 @@ CLI client entry point.
 Responsibilities:
 
 - Parse CLI commands.
-- Resolve IPC socket path.
+- Resolve IPC socket or Windows named pipe path.
 - Send IPC commands to `etled`.
 - Subscribe to IPC events for progress.
-- Provide commands such as seed/list/download/ping/shutdown.
+- Provide commands such as seed/list/delete/download/ping/shutdown/watch.
 - Print build/version information.
 
 ### `src/bin/etle-gui.rs`
@@ -39,6 +40,7 @@ GUI entry point.
 Responsibilities:
 
 - Print version/build info when requested.
+- Configure platform environment before GTK/Relm4 starts.
 - Run the GTK4/Relm4 GUI when `gui-relm4` is enabled.
 
 ## Crypto
@@ -94,114 +96,77 @@ Share descriptor model:
 - `EtleDescriptor`
 - `FileEntry`
 - `CryptoSuite`
-- share ID computation
-- serialization/deserialization
+- deterministic share ID computation
+- `bincode-next` serialization/deserialization
 
 ### `src/file/package.rs`
 
-Package layout and logical stream:
+Package layout for files and directories:
 
-- collect single file layout
-- collect directory layout
-- deterministic file ordering
-- global offsets
-- logical stream chunking across files
+- single-file layout
+- directory traversal
+- stable file ordering
+- logical package offsets
+- package stream chunking
 
 ### `src/file/manifest.rs`
 
-Legacy/transfer manifest:
-
-- file ID
-- file name
-- file size
-- chunk size
-- chunk metadata list
+Transfer manifest model and serialization.
 
 ### `src/file/storage.rs`
 
-Encrypted file/chunk helpers:
-
-- encrypt file into chunks
-- decrypt/reconstruct bytes
-- debug workspace helpers
+File encryption/decryption and debug workspace helpers.
 
 ## Protocol
 
 ### `src/protocol/message.rs`
 
-Wire message enum and protocol constants.
-
-Important messages:
-
-- `Hello`
-- `Capabilities`
-- `KeyExchange`
-- `AuthProof`
-- `RequestShare`
-- `Manifest`
-- `WrappedFileKey`
-- `Have`
-- `RequestChunk`
-- `Chunk`
-- `Error`
+Wire message enum and capability constants.
 
 ### `src/protocol/codec.rs`
 
-Async frame codec:
+Frame codec:
 
-- send message
-- receive message
-- length prefix validation
-- raw chunk frame handling
-- bincode trailing-byte checks
+- frame size prefix
+- frame size limits
+- `bincode-next` encode/decode
+- raw chunk frame support
 
 ## Discovery
 
 ### `src/discovery/options.rs`
 
-Discovery runtime options:
-
-- UDP port
-- timeout
-- multicast address
-- verbose logging flag
+Discovery port, timeout, multicast, and broadcast options.
 
 ### `src/discovery/client.rs`
 
-Discovery query sender and response collector.
+Discovery query client and peer collection.
 
 ### `src/discovery/server.rs`
 
-Discovery query responder owned by the daemon.
+Discovery response server tied to local library state.
 
 ### `src/discovery/network.rs`
 
-Discovery network helpers:
-
-- interface enumeration
-- broadcast/multicast target generation
-- local share lookup
-- advertised address handling
-- instance ID/dedup helpers
+Discovery target calculation, response address handling, local share filtering, and encode/decode helpers.
 
 ## State
 
 ### `src/state/paths.rs`
 
-Default ETLE library root and path helpers.
+Default library root and per-share path helpers.
 
 ### `src/state/library.rs`
 
-Local share library operations:
+Local library operations:
 
-- create/read share records
 - list shares
-- resolve descriptor/secret/chunk paths
-- count completed chunks
+- initialize share state
+- delete a share directory by `ShareId`
 
-### `src/state/progress.rs`
+### `src/state/storage.rs`
 
-Progress persistence and missing/completed chunk tracking.
+Read/write helpers for descriptor, secret, progress, state, and chunks.
 
 ## Network Transfer
 
@@ -211,48 +176,72 @@ TCP bind/connect helpers.
 
 ### `src/network/handshake.rs`
 
-Hello/capability handshake flow.
+Protocol hello/capability handshake.
 
 ### `src/network/key_exchange.rs`
 
-Network session key exchange and PSK-authenticated variant.
+Network-level session key exchange, including PSK-authenticated mode.
 
 ### `src/network/transfer/serve.rs`
 
-Seeder-side peer session handling.
+Seeder/library serving paths.
 
 ### `src/network/transfer/download.rs`
 
-Downloader-side transfer handling.
+Single-peer, multi-peer, discovery-assisted, resume, and parallel download paths.
 
 ### `src/network/transfer/options.rs`
 
-Transfer options:
-
-- log level
-- request window
-- parallelism
-- library root
-- PSK
+Transfer options and defaults.
 
 ### `src/network/transfer/jobs.rs`
 
-In-process active job registry.
+Active transfer job registry.
+
+### `src/network/transfer/progress.rs`
+
+Progress event/log helpers.
 
 ## IPC
 
 ### `src/ipc/message.rs`
 
-IPC command/response/event types.
+IPC command, response, and event types, including:
+
+- `DeleteShare`
+- `ShareDeleted`
+- transfer queued/completed events
+- server started/stopped events
 
 ### `src/ipc/server/`
 
-Daemon-side IPC command handling.
+Daemon IPC listener, command dispatch, cleanup, and event fanout.
 
 ### `src/ipc/client.rs`
 
-CLI/GUI-side IPC client helpers.
+CLI/GUI IPC client helpers.
 
 ### `src/ipc/path.rs`
 
-Default IPC path resolution.
+Default IPC endpoint selection:
+
+- Unix-like: `<library-root>/.etle/etled.sock`
+- Windows: `\\.\pipe\etled`
+
+## GUI
+
+### `src/gui/app.rs`
+
+Relm4 application state/update logic.
+
+### `src/gui/widgets.rs`
+
+GTK widget construction and list refill helpers.
+
+### `src/gui/style.rs`
+
+Platform style/environment installer.
+
+### `src/gui/style/windows.css`
+
+Windows-only app-scoped GTK CSS for a Fluent-like appearance.

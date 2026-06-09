@@ -1,10 +1,8 @@
 # ETLE examples
 
-These examples are local and deterministic enough for CI. They do not open TCP
-sockets and do not require a running `etled` daemon.
+These examples are local and deterministic enough for CI. They do not open TCP sockets and do not require a running `etled` daemon.
 
-Example output uses a compact `key=value` format so it is easy to compare in
-logs across Linux, macOS, and Windows.
+Example output uses a compact `key=value` format so it is easy to compare in logs across Linux, macOS, and Windows.
 
 ## `local_roundtrip`
 
@@ -28,23 +26,50 @@ ETLE_EXAMPLE_PSK='test shared secret' \
   cargo run --example local_roundtrip -- ./sample.bin
 ```
 
+Expected output shape:
+
+```text
+example=local_roundtrip
+status=ok
+input=...
+output=...
+file_id=...
+chunks=...
+chunk_size=...
+```
+
 ## `debug_roundtrip`
 
-Runs the same core flow, then writes a debug workspace containing the manifest,
-encrypted chunks, and reconstructed output:
+Runs the same core flow, then writes a debug workspace containing the manifest, encrypted chunks, and reconstructed output:
 
 ```sh
 cargo run --example debug_roundtrip -- ./sample.bin .etle-work/sample
 ```
 
-The workspace is useful when inspecting chunk metadata, encrypted chunk sizes, or
-reconstruction behavior.
+The workspace is useful when inspecting chunk metadata, encrypted chunk sizes, or reconstruction behavior.
+
+Expected output shape:
+
+```text
+example=debug_roundtrip
+status=ok
+workspace=...
+manifest=...
+chunks_dir=...
+output=...
+first_chunk_prefix=...
+```
 
 ## GUI build
 
-The GUI is feature-gated. Build it without default CLI features when you only
-want the GUI binary:
+The GUI is feature-gated. Build it without default CLI features when you only want the GUI binary:
 
 ```sh
 cargo run --no-default-features --features gui-relm4 --bin etle-gui
+```
+
+For release-style testing:
+
+```sh
+cargo build --locked --release --no-default-features --features gui-relm4 --bin etle-gui
 ```

@@ -11,6 +11,7 @@
 - Serve local shares.
 - Start UDP discovery server.
 - Start IPC command server.
+- Apply seed/download/delete commands.
 - Emit progress/events to clients.
 - Apply PSK and log-level settings.
 
@@ -66,24 +67,44 @@ Typical IPC commands:
 
 - Ping
 - ListShares
-- Seed
+- SeedFile
+- DeleteShare
 - Download
 - DownloadFresh
+- SubscribeEvents
 - Shutdown
 
-Typical IPC events:
+Typical IPC responses/events:
 
-- log/status messages
+- share list
+- share added
+- share deleted
+- transfer queued
 - transfer progress
-- download completion
+- transfer completion
+- server started/stopped
 - errors
+
+Delete requests are handled by the daemon so that CLI and GUI follow the same local-library path. The daemon logs delete request, success, not-found, and error cases.
 
 ## IPC Path
 
-Default IPC path is derived from the library root. On Unix-like systems this is a socket under the ETLE root. On Windows it is implemented using the platform IPC mechanism used by the project.
+Default IPC path is derived from the library root. Unix-like platforms use a socket under the ETLE root:
 
-Use `--ipc-socket` in CLI when targeting a non-default daemon/library.
+```text
+<library-root>/.etle/etled.sock
+```
+
+Windows uses a named pipe:
+
+```text
+\\.\pipe\etled
+```
+
+Use `--ipc-socket` in CLI when targeting a non-default daemon/library. On Windows, prefer the default named pipe unless you intentionally changed the daemon endpoint.
 
 ## Operational Notes
 
 Only one daemon should own a library root at a time. If discovery or IPC seems stale, check for old `etled` processes.
+
+CLI, GUI, and daemon should be rebuilt and updated together whenever IPC message variants change.

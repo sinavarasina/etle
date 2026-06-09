@@ -8,6 +8,7 @@ ETLE uses modern primitives, but the project is experimental and not independent
 - Chunk encryption: XChaCha20-Poly1305
 - Key exchange: X25519
 - Optional authentication: PSK-derived BLAKE3 keyed auth tags
+- Serialization of metadata/wire structures: `bincode-next` with explicit trailing-byte checks
 
 ## Hash Types
 
@@ -19,6 +20,8 @@ Use cases:
 - chunk ciphertext verification
 - descriptor/share identity input
 - final reconstruction verification
+
+`ShareId` is also derived from descriptor metadata with BLAKE3, but it represents the whole share descriptor rather than a single file or chunk.
 
 ## Chunk Encryption
 
@@ -50,7 +53,7 @@ file_key encrypts chunks
 session_key wraps file_key for a peer session
 ```
 
-The descriptor is public and does not include the file key.
+The descriptor is public and does not include the file key. The local file key is stored in `secret.etlekey` and must be protected.
 
 ## X25519 Session
 
@@ -88,3 +91,4 @@ Both sides must use the same PSK. If the PSK is wrong or missing on one side, th
 - No formal protocol audit has been done.
 - No NAT traversal or anti-traffic-analysis design exists.
 - Local `secret.etlekey` must be protected by filesystem permissions.
+- Local share deletion removes local encrypted chunks and secret state; it is not secure erasure.
