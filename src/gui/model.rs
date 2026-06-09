@@ -196,6 +196,7 @@ pub enum IpcRequestKind {
     ListShares,
     Seed,
     Download,
+    DeleteShare,
 }
 
 impl IpcRequestKind {
@@ -205,6 +206,7 @@ impl IpcRequestKind {
             Self::ListShares => "refresh",
             Self::Seed => "seed",
             Self::Download => "download",
+            Self::DeleteShare => "delete",
         }
     }
 }
@@ -220,6 +222,7 @@ pub struct EtleGui {
     pub refresh_interval_secs: u64,
     pub activity_limit: usize,
     pub selected_share: Option<usize>,
+    pub pending_delete_share: Option<ShareId>,
     pub shares: Vec<IpcShareSummary>,
     pub transfers: Vec<GuiTransfer>,
     pub hidden_finished_transfers: BTreeSet<String>,
@@ -262,6 +265,7 @@ impl EtleGui {
             refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
             activity_limit: DEFAULT_ACTIVITY_LIMIT,
             selected_share: None,
+            pending_delete_share: None,
             shares: Vec::new(),
             transfers: Vec::new(),
             hidden_finished_transfers: BTreeSet::new(),
@@ -378,6 +382,9 @@ pub enum AppInput {
 
     SelectShare(usize),
     CopySelectedShareId,
+    DeleteSelectedShare,
+    ConfirmDeleteSelectedShare,
+    CancelDeleteShare,
     ClearLog,
     ClearFinishedTransfers,
 

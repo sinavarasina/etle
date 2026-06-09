@@ -104,3 +104,15 @@ pub fn init(
 
     Ok(paths)
 }
+
+pub fn delete(root: impl AsRef<Path>, share_id: ShareId) -> Result<bool, FileError> {
+    let paths = LibraryPaths::for_share(root, share_id);
+    let share_dir = paths.share_dir();
+
+    if !share_dir.exists() {
+        return Ok(false);
+    }
+
+    fs::remove_dir_all(share_dir)?;
+    Ok(true)
+}

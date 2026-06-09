@@ -19,6 +19,9 @@ pub enum IpcCommand {
         listen: SocketAddr,
     },
     StopServing,
+    DeleteShare {
+        share_id: ShareId,
+    },
     Download {
         share_id: ShareId,
         peers: Vec<SocketAddr>,
@@ -63,6 +66,10 @@ pub enum IpcResponse {
     ShareAdded {
         share: IpcShareSummary,
     },
+    ShareDeleted {
+        share_id: ShareId,
+        name: String,
+    },
     TransferQueued {
         share_id: ShareId,
         job_id: String,
@@ -97,6 +104,9 @@ pub enum IpcEvent {
     ServerStopped,
     ShareUpdated {
         share: IpcShareSummary,
+    },
+    ShareDeleted {
+        share_id: ShareId,
     },
     PeerConnected {
         peer_id: String,

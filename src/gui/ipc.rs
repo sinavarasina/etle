@@ -43,7 +43,9 @@ fn request_timeout(kind: IpcRequestKind) -> Duration {
     match kind {
         IpcRequestKind::Ping => Duration::from_secs(5),
         IpcRequestKind::ListShares => Duration::from_secs(30),
-        IpcRequestKind::Seed | IpcRequestKind::Download => Duration::from_secs(30),
+        IpcRequestKind::Seed | IpcRequestKind::Download | IpcRequestKind::DeleteShare => {
+            Duration::from_secs(30)
+        }
     }
 }
 

@@ -59,6 +59,13 @@ enum Command {
     /// List local shares through etled.
     List,
 
+    /// Delete a share from the daemon local library.
+    Delete {
+        /// Share ID to delete from the local daemon library.
+        #[arg(long)]
+        share_id: ShareId,
+    },
+
     /// Ask etled to download a share from one or more peers.
     Download {
         /// Seeder peer address. Can be repeated for fallback or parallel download.
@@ -178,6 +185,7 @@ async fn main() -> anyhow::Result<()> {
             chunk_size,
         },
         Command::List => IpcCommand::ListShares,
+        Command::Delete { share_id } => IpcCommand::DeleteShare { share_id },
         Command::Download {
             peer,
             share_id,
@@ -279,6 +287,11 @@ fn print_response(response: IpcResponse) -> anyhow::Result<()> {
             println!("[daemon] share added");
             print_share(&share);
         }
+        IpcResponse::ShareDeleted { share_id, name } => {
+            println!("[daemon] share deleted");
+            println!("[daemon] share_id: {share_id}");
+            println!("[daemon] name: {name}");
+        }
         IpcResponse::TransferQueued { share_id, job_id } => {
             println!("[daemon] transfer queued: {share_id}");
             println!("[daemon] job_id: {job_id}");
@@ -312,6 +325,7 @@ fn print_event(event: IpcEvent) {
             println!("[event] share updated");
             print_share(&share);
         }
+        IpcEvent::ShareDeleted { share_id } => println!("[event] share deleted: {share_id}"),
         IpcEvent::PeerConnected { peer_id } => println!("[event] peer connected: {peer_id}"),
         IpcEvent::ChunkCompleted {
             share_id,

@@ -21,6 +21,8 @@ pub struct GuiWidgets {
 
     pub library_list: ListBox,
     pub detail_buffer: TextBuffer,
+    pub delete_confirm_box: gtk::Box,
+    pub delete_confirm_label: Label,
 
     pub seed_list: ListBox,
     pub seed_chunk_spin: SpinButton,
@@ -61,16 +63,37 @@ pub fn section(title: &str, child: &impl IsA<gtk::Widget>) -> Frame {
 pub fn build_library_page(
     library_list: &ListBox,
     detail_buffer: &TextBuffer,
+    delete_confirm_box: &gtk::Box,
+    delete_confirm_label: &Label,
     sender: &ComponentSender<EtleGui>,
 ) -> gtk::Box {
     let page = gtk::Box::new(Orientation::Vertical, 8);
 
     let actions = gtk::Box::new(Orientation::Horizontal, 6);
     let copy_button = Button::with_label("Copy share ID");
+    let delete_button = Button::with_label("Delete selected share");
+    delete_button.add_css_class("destructive-action");
     let clear_finished_button = Button::with_label("Clear completed transfers");
     actions.append(&copy_button);
+    actions.append(&delete_button);
     actions.append(&clear_finished_button);
     page.append(&actions);
+
+    delete_confirm_box.set_margin_top(2);
+    delete_confirm_box.set_margin_bottom(2);
+    delete_confirm_box.set_margin_start(4);
+    delete_confirm_box.set_margin_end(4);
+    delete_confirm_box.set_visible(false);
+    delete_confirm_label.set_xalign(0.0);
+    delete_confirm_label.set_wrap(true);
+    delete_confirm_label.set_hexpand(true);
+    let cancel_delete_button = Button::with_label("Cancel");
+    let confirm_delete_button = Button::with_label("Delete permanently");
+    confirm_delete_button.add_css_class("destructive-action");
+    delete_confirm_box.append(delete_confirm_label);
+    delete_confirm_box.append(&cancel_delete_button);
+    delete_confirm_box.append(&confirm_delete_button);
+    page.append(delete_confirm_box);
 
     let body = gtk::Box::new(Orientation::Vertical, 8);
     page.append(&body);
@@ -101,6 +124,19 @@ pub fn build_library_page(
     {
         let sender = sender.clone();
         copy_button.connect_clicked(move |_| sender.input(AppInput::CopySelectedShareId));
+    }
+    {
+        let sender = sender.clone();
+        delete_button.connect_clicked(move |_| sender.input(AppInput::DeleteSelectedShare));
+    }
+    {
+        let sender = sender.clone();
+        cancel_delete_button.connect_clicked(move |_| sender.input(AppInput::CancelDeleteShare));
+    }
+    {
+        let sender = sender.clone();
+        confirm_delete_button
+            .connect_clicked(move |_| sender.input(AppInput::ConfirmDeleteSelectedShare));
     }
     {
         let sender = sender.clone();

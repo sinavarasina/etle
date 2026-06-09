@@ -92,6 +92,24 @@ fn lists_local_library_shares() {
 }
 
 #[test]
+fn deletes_local_library_share() {
+    let root = temp_dir_name("state-delete");
+    let _ = fs::remove_dir_all(&root);
+    let descriptor = sample_descriptor();
+    let key = SymmetricKey([9_u8; 32]);
+
+    let paths = library::init(&root, &descriptor, key, ShareMode::Seeding, None).unwrap();
+
+    assert!(paths.share_dir().is_dir());
+    assert!(library::delete(&root, descriptor.share_id).unwrap());
+    assert!(!paths.share_dir().exists());
+    assert!(library::list(&root).unwrap().is_empty());
+    assert!(!library::delete(&root, descriptor.share_id).unwrap());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn progress_sorts_and_deduplicates_completed_chunks() {
     let descriptor = sample_descriptor();
     let mut progress = DownloadProgress::new(descriptor.share_id, vec![2, 1, 2, 0]);

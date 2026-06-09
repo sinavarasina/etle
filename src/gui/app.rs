@@ -111,7 +111,15 @@ impl SimpleComponent for EtleGui {
         let library_list = ListBox::new();
         library_list.set_vexpand(true);
         let detail_buffer = TextBuffer::new(None);
-        let library_page = build_library_page(&library_list, &detail_buffer, &sender);
+        let delete_confirm_box = gtk::Box::new(Orientation::Horizontal, 6);
+        let delete_confirm_label = Label::new(None);
+        let library_page = build_library_page(
+            &library_list,
+            &detail_buffer,
+            &delete_confirm_box,
+            &delete_confirm_label,
+            &sender,
+        );
         stack.add_titled(&library_page, Some("library"), "Library");
 
         let seed_entry = Entry::builder()
@@ -236,10 +244,12 @@ impl SimpleComponent for EtleGui {
         }
         {
             let sender = sender.clone();
-            library_list.connect_row_activated(move |_, row| {
-                let index = row.index();
-                if index >= 0 {
-                    sender.input(AppInput::SelectShare(index as usize));
+            library_list.connect_row_selected(move |_, row| {
+                if let Some(row) = row {
+                    let index = row.index();
+                    if index >= 0 {
+                        sender.input(AppInput::SelectShare(index as usize));
+                    }
                 }
             });
         }
@@ -331,6 +341,8 @@ impl SimpleComponent for EtleGui {
             status_label,
             library_list,
             detail_buffer,
+            delete_confirm_box,
+            delete_confirm_label,
             seed_list,
             seed_chunk_spin,
             parallel_spin,
@@ -418,6 +430,7 @@ impl SimpleComponent for EtleGui {
             AppInput::SelectShare(index) => {
                 if index < self.shares.len() {
                     self.selected_share = Some(index);
+                    self.pending_delete_share = None;
                 }
             }
             AppInput::CopySelectedShareId => {
@@ -428,6 +441,9 @@ impl SimpleComponent for EtleGui {
                     self.push_log("share id copied");
                 }
             }
+            AppInput::DeleteSelectedShare => self.request_delete_selected_share(),
+            AppInput::ConfirmDeleteSelectedShare => self.confirm_delete_selected_share(sender),
+            AppInput::CancelDeleteShare => self.cancel_delete_share(),
             AppInput::ClearLog => {
                 self.activity.clear();
                 self.last_activity_message = None;
@@ -559,6 +575,17 @@ impl SimpleComponent for EtleGui {
         if *widgets.detail_text.borrow() != detail_text {
             widgets.detail_buffer.set_text(&detail_text);
             *widgets.detail_text.borrow_mut() = detail_text;
+        }
+
+        if let Some(share) = self.pending_delete_share_summary() {
+            widgets.delete_confirm_box.set_visible(true);
+            widgets.delete_confirm_label.set_text(&format!(
+                "Delete \"{}\" from the local ETLE library? This removes ETLE metadata and encrypted chunks. Original source/output files are not touched.",
+                share.name
+            ));
+        } else {
+            widgets.delete_confirm_box.set_visible(false);
+            widgets.delete_confirm_label.set_text("");
         }
 
         let transfer_sig = transfer_signature(&self.transfers);
@@ -794,8 +821,66 @@ impl EtleGui {
         }
     }
 
+    fn request_delete_selected_share(&mut self) {
+        let Some(share) = self.selected_share_summary().cloned() else {
+            self.status = "select share".to_string();
+            self.push_log("delete: select a share first");
+            return;
+        };
+
+        self.pending_delete_share = Some(share.share_id);
+        self.status = "confirm delete".to_string();
+        self.push_log(format!(
+            "delete: confirmation shown for {} {}",
+            share.share_id, share.name
+        ));
+    }
+
+    fn confirm_delete_selected_share(&mut self, sender: ComponentSender<Self>) {
+        let Some(share) = self.selected_share_summary().cloned() else {
+            self.pending_delete_share = None;
+            self.status = "select share".to_string();
+            self.push_log("delete: select a share first");
+            return;
+        };
+
+        if self.pending_delete_share != Some(share.share_id) {
+            self.request_delete_selected_share();
+            return;
+        }
+
+        self.pending_delete_share = None;
+        self.status = "delete requested".to_string();
+        self.push_log(format!(
+            "delete requested: {} {}",
+            share.share_id, share.name
+        ));
+
+        spawn_ipc_command(
+            self.active_socket_path.clone(),
+            IpcRequestKind::DeleteShare,
+            IpcCommand::DeleteShare {
+                share_id: share.share_id,
+            },
+            sender,
+        );
+    }
+
+    fn cancel_delete_share(&mut self) {
+        if self.pending_delete_share.is_some() {
+            self.pending_delete_share = None;
+            self.status = "delete cancelled".to_string();
+            self.push_log("delete cancelled");
+        }
+    }
+
     fn selected_share_summary(&self) -> Option<&IpcShareSummary> {
         self.selected_share.and_then(|index| self.shares.get(index))
+    }
+
+    fn pending_delete_share_summary(&self) -> Option<&IpcShareSummary> {
+        let pending = self.pending_delete_share?;
+        self.shares.iter().find(|share| share.share_id == pending)
     }
 
     pub(super) fn push_log(&mut self, message: impl Into<String>) {
@@ -919,6 +1004,12 @@ impl EtleGui {
                 self.mark_seed_completed_from_share(&share);
                 self.push_log(format!("share added: {} {}", share.share_id, share.name));
             }
+            Ok(IpcResponse::ShareDeleted { share_id, name }) => {
+                self.connected = true;
+                self.remove_share(share_id);
+                self.status = "share deleted".to_string();
+                self.push_log(format!("share deleted: {share_id} {name}"));
+            }
             Ok(IpcResponse::TransferQueued { share_id, job_id }) => {
                 self.connected = true;
                 let seq = self.bump_seq();
@@ -1013,6 +1104,11 @@ impl EtleGui {
                     self.mark_recent_running_failed(&error);
                     self.push_log(format!("{} request failed: {error}", kind.label()));
                 }
+                IpcRequestKind::DeleteShare => {
+                    self.connected = false;
+                    self.status = "request failed".to_string();
+                    self.push_log(format!("{} request failed: {error}", kind.label()));
+                }
             },
         }
     }
@@ -1034,6 +1130,10 @@ impl EtleGui {
                 self.upsert_share(share.clone());
                 self.mark_seed_completed_from_share(&share);
                 self.sync_existing_transfer_from_share(&share);
+            }
+            IpcEvent::ShareDeleted { share_id } => {
+                self.remove_share(share_id);
+                self.push_log(format!("share deleted: {share_id}"));
             }
             IpcEvent::PeerConnected { peer_id } => {
                 self.push_log(format!("peer connected: {peer_id}"));
@@ -1239,6 +1339,28 @@ impl EtleGui {
         };
         self.update_latest_from_transfer(&transfer);
         self.upsert_transfer(transfer);
+    }
+
+    fn remove_share(&mut self, share_id: etle::file::descriptor::ShareId) {
+        if self.pending_delete_share == Some(share_id) {
+            self.pending_delete_share = None;
+        }
+        let selected_share_id = self.selected_share_summary().map(|share| share.share_id);
+        self.shares.retain(|share| share.share_id != share_id);
+        self.selected_share = selected_share_id
+            .filter(|selected| *selected != share_id)
+            .and_then(|selected| {
+                self.shares
+                    .iter()
+                    .position(|share| share.share_id == selected)
+            });
+        self.transfers
+            .retain(|transfer| transfer.share_id != Some(share_id));
+
+        if self.transfers.is_empty() {
+            self.latest_progress = "idle".to_string();
+            self.progress_fraction = 0.0;
+        }
     }
 
     fn upsert_share(&mut self, share: IpcShareSummary) {

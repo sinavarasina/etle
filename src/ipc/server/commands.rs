@@ -4,6 +4,7 @@ pub fn handle(command: IpcCommand, library_root: &Path) -> IpcResponse {
     match command {
         IpcCommand::Ping => IpcResponse::Pong,
         IpcCommand::ListShares => list_shares_response(library_root),
+        IpcCommand::DeleteShare { share_id } => delete_share_response(library_root, share_id),
         IpcCommand::Shutdown => IpcResponse::Ack {
             message: "daemon shutdown requested".to_string(),
         },
@@ -354,6 +355,50 @@ fn list_shares_response(library_root: &Path) -> IpcResponse {
         Err(error) => IpcResponse::Error {
             message: error.to_string(),
         },
+    }
+}
+
+fn delete_share_response(library_root: &Path, share_id: ShareId) -> IpcResponse {
+    println!("[daemon] ipc delete requested: share_id={share_id}");
+
+    let share = match share_summary_by_id(library_root, share_id) {
+        Ok(Some(share)) => share,
+        Ok(None) => {
+            println!("[daemon] ipc delete failed: share_id={share_id} not found");
+            return IpcResponse::Error {
+                message: format!("share {share_id} does not exist in the local library"),
+            };
+        }
+        Err(message) => {
+            println!("[daemon] ipc delete failed: share_id={share_id}: {message}");
+            return IpcResponse::Error { message };
+        }
+    };
+
+    match library::delete(library_root, share_id) {
+        Ok(true) => {
+            println!(
+                "[daemon] ipc delete completed: share_id={share_id} name=\"{}\"",
+                share.name
+            );
+            super::events::publish(IpcEvent::ShareDeleted { share_id });
+            IpcResponse::ShareDeleted {
+                share_id,
+                name: share.name,
+            }
+        }
+        Ok(false) => {
+            println!("[daemon] ipc delete failed: share_id={share_id} disappeared");
+            IpcResponse::Error {
+                message: format!("share {share_id} disappeared before it could be deleted"),
+            }
+        }
+        Err(error) => {
+            println!("[daemon] ipc delete failed: share_id={share_id}: {error}");
+            IpcResponse::Error {
+                message: error.to_string(),
+            }
+        }
     }
 }
 

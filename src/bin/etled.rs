@@ -175,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("[daemon] ipc socket: {}", ipc_socket.display());
                 println!(
-                    "[daemon] ipc commands: Ping, ListShares, SeedFile, Download, SubscribeEvents, Shutdown"
+                    "[daemon] ipc commands: Ping, ListShares, DeleteShare, SeedFile, Download, SubscribeEvents, Shutdown"
                 );
 
                 let p2p_library_root = library_root.clone();
