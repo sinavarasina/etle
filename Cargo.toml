@@ -11,7 +11,7 @@ path = "src/lib.rs"
 anyhow = "1.0.102"
 bincode-next = { version = "3.0.0-rc.15", features = ["serde"] }
 blake3 = "1.8.5"
-chacha20poly1305 = "0.10.1"
+chacha20poly1305 = "0.11.0"
 clap = { version = "4.6.1", features = ["derive"], optional = true }
 get_if_addrs = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }
@@ -27,7 +27,7 @@ tokio = { version = "1", features = [
 ] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-x25519-dalek = "2.0.1"
+x25519-dalek = "3.0.0"
 relm4 = { version = "0.11", optional = true }
 rfd = { version = "0.17", optional = true }
 hex = "0.4.3"
