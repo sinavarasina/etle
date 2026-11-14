@@ -66,6 +66,7 @@ The CLI and GUI communicate with `etled` through IPC.
 Typical IPC commands:
 
 - Ping
+- GetStatus
 - ListShares
 - SeedFile
 - DeleteShare
@@ -76,13 +77,13 @@ Typical IPC commands:
 
 Typical IPC responses/events:
 
-- share list
-- share added
-- share deleted
-- transfer queued
-- transfer progress
-- transfer completion
-- server started/stopped
+- runtime daemon status and active job list (`IpcDaemonStatus`, `IpcActiveJob`)
+- share list (including `total_bytes` and `chunk_size`)
+- share added / updated / deleted
+- seed/transfer queued (`SeedQueued`, `TransferQueued`)
+- job started / progress / completed / failed (`JobStarted`, `TaskProgress`, `JobCompleted`, `JobFailed`)
+- peer connection and chunk verification events
+- server started/stopped events
 - errors
 
 Delete requests are handled by the daemon so that CLI and GUI follow the same local-library path. The daemon logs delete request, success, not-found, and error cases.

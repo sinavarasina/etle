@@ -23,6 +23,12 @@ Add a file into the daemon library and make it seedable:
 etle-cli seed ./sample.bin
 ```
 
+Wait and stream live job progress until completion (`--follow` / `-f`):
+
+```bash
+etle-cli seed ./sample.bin --follow
+```
+
 With explicit chunk size:
 
 ```bash
@@ -61,6 +67,15 @@ etle-cli download --share-id <64_HEX_SHARE_ID>
 etle-cli download \
   --share-id <64_HEX_SHARE_ID> \
   --peer 192.168.1.15:7000
+```
+
+Stream live download progress until completion or failure (`--follow` / `-f`):
+
+```bash
+etle-cli download \
+  --share-id <64_HEX_SHARE_ID> \
+  --peer 192.168.1.15:7000 \
+  --follow
 ```
 
 ## Multiple Peers
@@ -126,12 +141,15 @@ On Windows the default IPC endpoint is the named pipe:
 \\.\pipe\etled
 ```
 
-## Ping and Shutdown
+## Ping, Status, and Shutdown
 
 ```bash
 etle-cli daemon ping
+etle-cli daemon status
 etle-cli daemon shutdown
 ```
+
+`daemon status` queries `IpcCommand::GetStatus` and prints the daemon peer ID, listen address, library root, share count, discovery/auth flags, and currently active jobs (Seed, Download, Upload).
 
 Watch daemon events and transfer progress:
 

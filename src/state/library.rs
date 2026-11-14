@@ -1,3 +1,8 @@
+use std::{
+    io::ErrorKind,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
 use super::prelude::*;
 use super::{
     model::{DownloadProgress, EtleSecret, LIBRARY_DIR_NAME, ShareMode, ShareState},
@@ -7,6 +12,8 @@ use super::{
         write_state,
     },
 };
+
+static DELETE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub fn list(root: impl AsRef<Path>) -> Result<Vec<LocalShareSummary>, FileError> {
     let root = root.as_ref();
@@ -31,31 +38,15 @@ pub fn list(root: impl AsRef<Path>) -> Result<Vec<LocalShareSummary>, FileError>
         let Ok(share_id) = name.parse::<ShareId>() else {
             continue;
         };
-
-        let paths = LibraryPaths::for_share(root, share_id);
-        if !paths.descriptor_path().is_file() {
+        if name != share_id.to_string() {
             continue;
         }
 
-        let descriptor = read_descriptor(&paths)?;
-        let progress = if paths.progress_path().is_file() {
-            Some(read_progress(&paths)?)
-        } else {
-            None
+        let paths = LibraryPaths::for_share(root, share_id);
+        let Some(summary) = read_share_summary(&paths) else {
+            continue;
         };
-        let state = if paths.state_path().is_file() {
-            Some(read_state(&paths)?)
-        } else {
-            None
-        };
-
-        shares.push(LocalShareSummary {
-            has_secret: paths.secret_path().is_file(),
-            paths,
-            descriptor,
-            progress,
-            state,
-        });
+        shares.push(summary);
     }
 
     shares.sort_by(|left, right| {
@@ -73,6 +64,52 @@ pub fn list(root: impl AsRef<Path>) -> Result<Vec<LocalShareSummary>, FileError>
     Ok(shares)
 }
 
+fn read_share_summary(paths: &LibraryPaths) -> Option<LocalShareSummary> {
+    let descriptor = match read_descriptor(paths) {
+        Ok(descriptor) => descriptor,
+        Err(FileError::Io(error)) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!(
+                "[state] warning: skipping corrupted share descriptor {}: {error}",
+                paths.share_id
+            );
+            return None;
+        }
+    };
+
+    let progress = match read_progress(paths) {
+        Ok(progress) => Some(progress),
+        Err(FileError::Io(error)) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            eprintln!(
+                "[state] warning: skipping share {} due to unreadable progress: {error}",
+                paths.share_id
+            );
+            return None;
+        }
+    };
+
+    let state = match read_state(paths) {
+        Ok(state) => Some(state),
+        Err(FileError::Io(error)) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            eprintln!(
+                "[state] warning: skipping share {} due to unreadable state: {error}",
+                paths.share_id
+            );
+            return None;
+        }
+    };
+
+    Some(LocalShareSummary {
+        has_secret: paths.secret_path().is_file(),
+        paths: paths.clone(),
+        descriptor,
+        progress,
+        state,
+    })
+}
+
 pub fn init(
     root: impl AsRef<Path>,
     descriptor: &EtleDescriptor,
@@ -80,7 +117,17 @@ pub fn init(
     mode: ShareMode,
     output_dir: Option<PathBuf>,
 ) -> Result<LibraryPaths, FileError> {
+    if !descriptor.verify_share_id() {
+        return Err(FileError::ShareIdMismatch {
+            expected: descriptor.recompute_share_id(),
+            actual: descriptor.share_id,
+        });
+    }
+
     let paths = LibraryPaths::for_share(root, descriptor.share_id);
+    if paths.chunks_dir().is_dir() {
+        clear_existing_chunk_files(&paths.chunks_dir())?;
+    }
 
     fs::create_dir_all(paths.chunks_dir())?;
     fs::create_dir_all(paths.output_dir())?;
@@ -105,14 +152,33 @@ pub fn init(
     Ok(paths)
 }
 
+fn clear_existing_chunk_files(chunks_dir: &Path) -> Result<(), FileError> {
+    for entry in fs::read_dir(chunks_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn delete(root: impl AsRef<Path>, share_id: ShareId) -> Result<bool, FileError> {
     let paths = LibraryPaths::for_share(root, share_id);
     let share_dir = paths.share_dir();
+    let library_dir = paths.library_dir();
+    let seq = DELETE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let tombstone = library_dir.join(format!(".deleting-{share_id}-{}-{seq}", std::process::id()));
 
-    if !share_dir.exists() {
-        return Ok(false);
+    match fs::rename(&share_dir, &tombstone) {
+        Ok(()) => {
+            fs::remove_dir_all(&tombstone)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
     }
-
-    fs::remove_dir_all(share_dir)?;
-    Ok(true)
 }

@@ -2,11 +2,17 @@ pub(super) use std::{
     fs,
     net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
-pub(super) use tokio::{io::AsyncWrite, sync::broadcast};
+pub(super) use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    sync::broadcast,
+};
 
 #[cfg(unix)]
 pub(super) use tokio::net::UnixListener;
@@ -15,11 +21,17 @@ pub(super) use tokio::net::UnixListener;
 pub(super) use tokio::net::windows::named_pipe::ServerOptions;
 
 pub(super) use crate::{
-    discovery::{client, options::DiscoveryOptions},
-    file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId, manifest::Manifest},
+    discovery::{
+        client,
+        options::{DEFAULT_DISCOVERY_PORT, DiscoveryOptions},
+    },
+    file::{descriptor::ShareId, manifest::Manifest},
     ipc::{
         error::IpcError,
-        message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
+        message::{
+            IpcActiveJob, IpcCommand, IpcDaemonStatus, IpcEvent, IpcJobKind, IpcResponse,
+            IpcShareSummary,
+        },
     },
     network::transfer::{
         download, jobs,

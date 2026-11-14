@@ -144,3 +144,44 @@ fn encrypted_chunk_storage_roundtrip() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn library_list_skips_corrupt_share_without_failing_healthy_shares() {
+    let root = temp_dir_name("state-list-corrupt");
+    let _ = fs::remove_dir_all(&root);
+    let healthy = sample_descriptor();
+    let key = SymmetricKey([9_u8; 32]);
+    library::init(&root, &healthy, key, ShareMode::Seeding, None).unwrap();
+
+    let bad_id = ShareId([0xaa_u8; 32]);
+    let bad_paths = LibraryPaths::for_share(&root, bad_id);
+    fs::create_dir_all(bad_paths.share_dir()).unwrap();
+    fs::write(bad_paths.descriptor_path(), b"corrupted").unwrap();
+
+    let listed = library::list(&root).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].descriptor.share_id, healthy.share_id);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn library_init_rejects_mismatched_descriptor_share_id() {
+    let root = temp_dir_name("state-init-bad-id");
+    let _ = fs::remove_dir_all(&root);
+    let mut descriptor = sample_descriptor();
+    descriptor.share_id = ShareId([0x55_u8; 32]);
+
+    assert!(matches!(
+        library::init(
+            &root,
+            &descriptor,
+            SymmetricKey([1_u8; 32]),
+            ShareMode::Seeding,
+            None
+        ),
+        Err(FileError::ShareIdMismatch { .. })
+    ));
+
+    let _ = fs::remove_dir_all(root);
+}

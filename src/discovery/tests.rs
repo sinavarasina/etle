@@ -56,3 +56,35 @@ fn preferred_peer_deduplicates_same_discovery_instance() {
     assert_eq!(peers.len(), 1);
     assert_eq!(peers["same"], "127.0.0.1:7000".parse().unwrap());
 }
+
+#[test]
+fn resolve_discovered_peer_addr_rejects_remote_loopback_spoof() {
+    let spoof = "127.0.0.1:7000".parse().unwrap();
+    let remote = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50));
+
+    assert_eq!(
+        super::network::resolve_discovered_peer_addr(spoof, 7000, remote),
+        None
+    );
+    assert_eq!(
+        super::network::resolve_discovered_peer_addr(spoof, 7000, IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        Some(spoof)
+    );
+}
+
+#[test]
+fn subnet_broadcast_ignores_zero_and_point_to_point_masks() {
+    let ip = Ipv4Addr::new(10, 0, 0, 1);
+    assert_eq!(
+        super::network::subnet_broadcast(ip, Ipv4Addr::new(0, 0, 0, 0)),
+        None
+    );
+    assert_eq!(
+        super::network::subnet_broadcast(ip, Ipv4Addr::new(255, 255, 255, 254)),
+        None
+    );
+    assert_eq!(
+        super::network::subnet_broadcast(ip, Ipv4Addr::new(255, 255, 255, 255)),
+        None
+    );
+}

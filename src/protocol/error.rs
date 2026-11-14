@@ -21,7 +21,7 @@ pub enum ProtocolError {
     FrameTooSmall { len: usize, min: usize },
 
     #[error("raw chunk frame size mismatch: expected {expected} bytes, got {actual} bytes")]
-    RawChunkSizeMismatch { expected: usize, actual: usize },
+    RawChunkSizeMismatch { expected: u64, actual: u64 },
 
     #[error("protocol frame has trailing bytes: decoded {bytes_read} bytes from {frame_len} bytes")]
     TrailingBytes { bytes_read: usize, frame_len: usize },

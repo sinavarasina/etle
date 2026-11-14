@@ -5,6 +5,8 @@ use crate::crypto::{
     hash::{ChunkHash, FileId},
 };
 
+pub const MAX_METADATA_DECODE_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkMeta {
     pub index: u32,
@@ -29,8 +31,14 @@ impl Manifest {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
-        let (manifest, bytes_read): (Self, usize) =
-            bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
+        if bytes.len() > MAX_METADATA_DECODE_BYTES {
+            return Err(bincode_next::error::DecodeError::LimitExceeded);
+        }
+
+        let (manifest, bytes_read): (Self, usize) = bincode_next::serde::decode_from_slice(
+            bytes,
+            bincode_next::config::standard().with_limit::<MAX_METADATA_DECODE_BYTES>(),
+        )?;
 
         if bytes_read != bytes.len() {
             return Err(bincode_next::error::DecodeError::OtherString(format!(

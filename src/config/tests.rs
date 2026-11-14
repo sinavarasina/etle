@@ -50,3 +50,15 @@ fn ignores_comments_outside_strings() {
 fn rejects_non_multicast_discovery_multicast() {
     assert!(parse(r#"discovery_multicast = "192.168.1.1""#).is_err());
 }
+
+#[test]
+fn rejects_malformed_quotes_empty_values_and_zero_ports_or_windows() {
+    assert!(parse(r#"library_root = "unclosed"#).is_err());
+    assert!(parse(r#"library_root = "ok" trailing"#).is_err());
+    assert!(parse(r#"library_root = "bad\qescape""#).is_err());
+    assert!(parse(r#"library_root = """#).is_err());
+    assert!(parse(r#"auth_psk = "   ""#).is_err());
+    assert!(parse("discovery_port = 0").is_err());
+    assert!(parse("discovery_timeout_ms = 0").is_err());
+    assert!(parse("request_window = 0").is_err());
+}

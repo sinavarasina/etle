@@ -1,6 +1,5 @@
 /* Windows-only GTK styling for ETLE.
- * This is intentionally small and app-scoped. It borrows the visual language
- * of Fluent/Windows 11 without depending on an external GTK theme.
+ * Layers Fluent/Windows 11 visual language on top of common.css.
  */
 
 window.etle-window {
@@ -25,8 +24,88 @@ window.etle-window {
     padding: 4px 4px 8px 4px;
 }
 
-.etle-header-actions {
-    margin-top: 2px;
+.etle-conn-online {
+    background-color: #dff6dd;
+    border-color: #84c98b;
+    color: #0e5a16;
+}
+
+.etle-conn-offline {
+    background-color: #fde7e9;
+    border-color: #e4959c;
+    color: #8b1e24;
+}
+
+.etle-banner {
+    background-color: #ffffff;
+    border-color: #dedede;
+    color: #1f1f1f;
+}
+
+.etle-banner-info {
+    background-color: #eaf3fc;
+    border-color: #9ec6ed;
+    color: #0b487f;
+}
+
+.etle-banner-success {
+    background-color: #e7f6e7;
+    border-color: #97d19d;
+    color: #0e5a16;
+}
+
+.etle-banner-warning {
+    background-color: #fff4ce;
+    border-color: #e0c36e;
+    color: #6b4e00;
+}
+
+.etle-banner-error {
+    background-color: #fde7e9;
+    border-color: #e4959c;
+    color: #8b1e24;
+}
+
+.etle-strip {
+    background-color: #ffffff;
+    border: 1px solid #d7e3ef;
+    color: #1f1f1f;
+}
+
+.etle-confirm-bar {
+    background-color: #fdf0f1;
+    border: 1px solid #e4959c;
+    color: #5c141a;
+}
+
+.etle-badge-ok {
+    background-color: #dff6dd;
+    border-color: #97d19d;
+    color: #0e5a16;
+}
+
+.etle-badge-accent {
+    background-color: #dcebfa;
+    border-color: #96c2ed;
+    color: #004c94;
+}
+
+.etle-badge-warn {
+    background-color: #fff4ce;
+    border-color: #e0c36e;
+    color: #6b4e00;
+}
+
+.etle-badge-error {
+    background-color: #fde7e9;
+    border-color: #e4959c;
+    color: #8b1e24;
+}
+
+.etle-badge-muted {
+    background-color: #f0f0f0;
+    border-color: #d6d6d6;
+    color: #4f4f4f;
 }
 
 frame {
@@ -38,7 +117,7 @@ frame {
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
-frame>label {
+frame > label {
     color: #424242;
     font-weight: 600;
     padding: 0 6px;
@@ -86,6 +165,12 @@ button.suggested-action:hover {
 
 button.suggested-action:active {
     background-color: #005a9e;
+}
+
+button.suggested-action:disabled {
+    background-color: #d8e5f2;
+    color: #7c95ad;
+    border-color: #c5d7e8;
 }
 
 button.destructive-action {
@@ -193,28 +278,56 @@ listbox {
 
 listbox row {
     margin: 2px;
-    padding: 3px;
+    padding: 4px 6px;
     border-radius: 6px;
+    border: 1px solid transparent;
 }
 
 listbox row:hover {
     background-color: #f5f5f5;
 }
 
-listbox row:selected {
-    background-color: #e5f1fb;
-    color: #000000;
+listbox row:selected,
+listbox row:selected:hover,
+listbox row:selected:focus {
+    background-color: #e3effa;
+    border-color: #7eb4e6;
+    color: #111111;
+}
+
+listbox row:selected label {
+    color: #111111;
+}
+
+listbox row:selected .dim-label {
+    color: #36506b;
+}
+
+listbox row:selected .etle-badge-ok {
+    color: #0e5a16;
+}
+
+listbox row:selected .etle-badge-accent {
+    color: #004c94;
+}
+
+listbox row:selected .etle-badge-warn {
+    color: #6b4e00;
+}
+
+listbox row:selected .etle-badge-error {
+    color: #8b1e24;
 }
 
 progressbar trough {
-    min-height: 4px;
+    min-height: 5px;
     border-radius: 999px;
     background-color: #e5e5e5;
     border: none;
 }
 
 progressbar progress {
-    min-height: 4px;
+    min-height: 5px;
     border-radius: 999px;
     background-color: #0067c0;
 }
@@ -235,7 +348,33 @@ scrollbar slider:hover {
 }
 
 .dim-label {
-    color: #666666;
+    color: #5f5f5f;
+}
+
+.etle-hint-ok {
+    color: #0e5a16;
+}
+
+.etle-hint-warn {
+    color: #8a5600;
+}
+
+.etle-kind-seed {
+    background-color: #f3ecfc;
+    border-color: #c2a7eb;
+    color: #51258f;
+}
+
+.etle-kind-download {
+    background-color: #dcebfa;
+    border-color: #96c2ed;
+    color: #004c94;
+}
+
+.etle-kind-upload {
+    background-color: #dff6dd;
+    border-color: #97d19d;
+    color: #0e5a16;
 }
 
 selection {

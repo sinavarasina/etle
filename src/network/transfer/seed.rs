@@ -8,6 +8,17 @@ pub fn add(
     library_root: impl AsRef<Path>,
     log_level: TransferLogLevel,
 ) -> Result<EtleDescriptor, NetworkError> {
+    add_with_job(input_path, chunk_size, library_root, log_level, None)
+}
+
+/// Adds a local file to the library and attaches chunk encryption progress to `job_id` if present.
+pub fn add_with_job(
+    input_path: impl AsRef<Path>,
+    chunk_size: usize,
+    library_root: impl AsRef<Path>,
+    log_level: TransferLogLevel,
+    job_id: Option<&str>,
+) -> Result<EtleDescriptor, NetworkError> {
     let input_path = input_path.as_ref();
 
     if log_level.is_normal() {
@@ -22,6 +33,7 @@ pub fn add(
         chunk_size,
         library_root.as_ref(),
         log_level,
+        job_id,
     )
 }
 
@@ -31,6 +43,7 @@ fn add_streaming(
     chunk_size: usize,
     library_root: &Path,
     log_level: TransferLogLevel,
+    job_id: Option<&str>,
 ) -> Result<EtleDescriptor, NetworkError> {
     if chunk_size == 0 {
         return Err(FileError::InvalidChunkSize(chunk_size).into());
@@ -39,10 +52,40 @@ fn add_streaming(
     let file_id = hash_file(input_path)?;
     let file_size = fs::metadata(input_path)?.len();
     let file_name = manifest_file_name(input_path);
+    let total_chunks = total_chunks_for_size(file_size, chunk_size);
+    let progress_context = input_path.display().to_string();
+
+    if let Some(job_id) = job_id {
+        super::jobs::update_job_metadata(
+            job_id,
+            None,
+            Some(file_name.clone()),
+            Some(total_chunks),
+            Some(file_size),
+        );
+    }
+
+    super::progress::init_context_session(
+        &progress_context,
+        "daemon",
+        "staged+encrypted",
+        total_chunks,
+        0,
+        0,
+        Some(file_size),
+        job_id.map(str::to_string),
+    );
+    let _progress_guard = super::progress::ProgressSessionGuard::new(
+        progress_context.clone(),
+        "daemon",
+        "staged+encrypted",
+        total_chunks,
+    );
+
     let staging = StagedChunkDir::create(library_root)?;
 
     let chunk_metas = encrypt_file_to_staging_parallel(
-        input_path, file_id, &file_key, chunk_size, &staging, log_level,
+        input_path, file_id, file_size, &file_key, chunk_size, &staging, log_level,
     )?;
 
     let manifest = Manifest {
@@ -53,6 +96,15 @@ fn add_streaming(
         chunks: chunk_metas,
     };
     let descriptor = super::download::descriptor_from_manifest(&manifest);
+    if let Some(job_id) = job_id {
+        super::jobs::update_job_metadata(
+            job_id,
+            Some(descriptor.share_id),
+            Some(manifest.file_name.clone()),
+            Some(manifest.chunks.len()),
+            Some(manifest.file_size),
+        );
+    }
     let paths = library::init(
         library_root,
         &descriptor,
@@ -182,14 +234,14 @@ fn manifest_file_name(path: &Path) -> String {
 fn encrypt_file_to_staging_parallel(
     input_path: &Path,
     file_id: FileId,
+    expected_size: u64,
     file_key: &SymmetricKey,
     chunk_size: usize,
     staging: &StagedChunkDir,
     log_level: TransferLogLevel,
 ) -> Result<Vec<ChunkMeta>, NetworkError> {
     let worker_count = default_seed_worker_count();
-    let total_size = fs::metadata(input_path)?.len();
-    let total_chunks = total_chunks_for_size(total_size, chunk_size);
+    let total_chunks = total_chunks_for_size(expected_size, chunk_size);
 
     if log_level.is_normal() {
         println!("[daemon] parallel seed encryption workers: {worker_count}");
@@ -265,24 +317,37 @@ fn encrypt_file_to_staging_parallel(
         drop(encrypted_tx);
 
         let mut input = File::open(input_path)?;
-        let mut index = 0_u32;
+        let mut next_index = Some(0_u32);
+        let mut hasher = blake3::Hasher::new();
+        let mut total_read = 0_u64;
+        let mut send_failed = false;
+
         loop {
             let mut buffer = vec![0_u8; chunk_size];
-            let read = input.read(&mut buffer)?;
+            let read = crate::file::chunker::read_full_or_eof(&mut input, &mut buffer)?;
             if read == 0 {
                 break;
             }
 
+            let index = next_index.ok_or(FileError::TooManyChunks)?;
+            next_index = index.checked_add(1);
+
             buffer.truncate(read);
-            plain_tx
+            hasher.update(&buffer);
+            total_read = total_read
+                .checked_add(read as u64)
+                .ok_or(FileError::PackageTooLarge)?;
+
+            if plain_tx
                 .send(SeedPlainChunk {
                     index,
                     data: buffer,
                 })
-                .map_err(|_| {
-                    NetworkError::PeerError("parallel seed worker stopped unexpectedly".to_string())
-                })?;
-            index = index.checked_add(1).ok_or(FileError::TooManyChunks)?;
+                .is_err()
+            {
+                send_failed = true;
+                break;
+            }
         }
 
         drop(plain_tx);
@@ -293,9 +358,22 @@ fn encrypt_file_to_staging_parallel(
             })?;
         }
 
-        writer
+        let chunk_metas = writer
             .join()
-            .map_err(|_| NetworkError::PeerError("parallel seed writer panicked".to_string()))?
+            .map_err(|_| NetworkError::PeerError("parallel seed writer panicked".to_string()))??;
+
+        if send_failed {
+            return Err(NetworkError::PeerError(
+                "parallel seed worker stopped unexpectedly".to_string(),
+            ));
+        }
+
+        let actual_file_id = FileId(*hasher.finalize().as_bytes());
+        if total_read != expected_size || actual_file_id != file_id {
+            return Err(FileError::FinalHashMismatch.into());
+        }
+
+        Ok(chunk_metas)
     })
 }
 

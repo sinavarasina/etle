@@ -24,6 +24,7 @@ use etle::{
     },
     state::{library, paths::default_library_root},
 };
+use tokio::sync::watch;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -129,18 +130,35 @@ async fn main() -> anyhow::Result<()> {
                 .or_else(|| config.ipc_socket())
                 .unwrap_or_else(|| default_ipc_socket_path(&library_root));
             let auth_psk = auth_psk
-                .or_else(|| std::env::var("ETLE_AUTH_PSK").ok())
-                .or_else(|| config.auth_psk());
-            print_startup_banner(&library_root, listen)?;
+                .filter(|psk| !psk.trim().is_empty())
+                .or_else(|| {
+                    std::env::var("ETLE_AUTH_PSK")
+                        .ok()
+                        .filter(|psk| !psk.trim().is_empty())
+                })
+                .or_else(|| config.auth_psk().filter(|psk| !psk.trim().is_empty()));
 
             let listener = bind_listener(listen).await?;
+            let listen = listener.local_addr()?;
+            print_startup_banner(&library_root, listen)?;
             let mut serve_options = ServeFileOptions::new(peer_id.clone(), log_level);
+            let auth_required = auth_psk.is_some();
             if let Some(auth_psk) = auth_psk {
                 println!("[daemon] p2p auth: PSK enabled");
                 serve_options = serve_options.with_auth_psk(AuthPsk::from_passphrase(auth_psk));
             } else {
                 println!("[daemon] p2p auth: disabled; key exchange is not MITM-resistant");
             }
+            etle::ipc::server::commands::set_runtime_info(
+                etle::ipc::server::commands::DaemonRuntimeInfo {
+                    peer_id: peer_id.clone(),
+                    listen: Some(listen),
+                    discovery_port,
+                    auto_discovery: !no_discovery,
+                    auth_required,
+                    log_level,
+                },
+            );
             let discovery_task = if no_discovery {
                 println!("[daemon] discovery: disabled");
                 None
@@ -167,7 +185,13 @@ async fn main() -> anyhow::Result<()> {
 
             if no_ipc {
                 println!("[daemon] ipc: disabled");
-                let result = serve::library_forever(listener, &library_root, serve_options).await;
+                let result = tokio::select! {
+                    result = serve::library_forever(listener, &library_root, serve_options) => result,
+                    signal_name = wait_for_termination_signal() => {
+                        println!("[daemon] received {signal_name}; shutting down");
+                        Ok(())
+                    }
+                };
                 if let Some(task) = discovery_task {
                     task.abort();
                 }
@@ -175,28 +199,132 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("[daemon] ipc socket: {}", ipc_socket.display());
                 println!(
-                    "[daemon] ipc commands: Ping, ListShares, DeleteShare, SeedFile, Download, SubscribeEvents, Shutdown"
+                    "[daemon] ipc commands: Ping, GetStatus, ListShares, DeleteShare, SeedFile, Download, SubscribeEvents, Shutdown"
                 );
 
+                let (shutdown_tx, shutdown_rx) = watch::channel(false);
                 let p2p_library_root = library_root.clone();
-                let p2p_task = tokio::spawn(async move {
+                let mut p2p_task = tokio::spawn(async move {
                     serve::library_forever(listener, p2p_library_root, serve_options).await
+                });
+                let ipc_socket_path = ipc_socket.clone();
+                let ipc_library_root = library_root.clone();
+                let mut ipc_task = tokio::spawn(async move {
+                    listener::forever_with_shutdown(
+                        &ipc_socket_path,
+                        &ipc_library_root,
+                        shutdown_rx,
+                    )
+                    .await
                 });
 
                 events::publish(IpcEvent::ServerStarted { listen });
 
-                let ipc_result = listener::forever(&ipc_socket, &library_root).await;
-                p2p_task.abort();
-                events::publish(IpcEvent::ServerStopped);
+                enum StopReason {
+                    Ipc(Result<Result<(), etle::ipc::error::IpcError>, tokio::task::JoinError>),
+                    P2p(
+                        Result<
+                            Result<(), etle::network::error::NetworkError>,
+                            tokio::task::JoinError,
+                        >,
+                    ),
+                    Signal(&'static str),
+                }
+
+                let stop_reason = tokio::select! {
+                    result = &mut ipc_task => StopReason::Ipc(result),
+                    result = &mut p2p_task => StopReason::P2p(result),
+                    signal_name = wait_for_termination_signal() => StopReason::Signal(signal_name),
+                };
+
+                let exit_result: anyhow::Result<()> = match stop_reason {
+                    StopReason::Ipc(result) => {
+                        p2p_task.abort();
+                        match result {
+                            Ok(Ok(())) => Ok(()),
+                            Ok(Err(error)) => {
+                                events::publish(IpcEvent::ServerStopped);
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                Err(error.into())
+                            }
+                            Err(join_error) => {
+                                events::publish(IpcEvent::ServerStopped);
+                                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                                Err(anyhow::anyhow!("IPC server task panicked: {join_error}"))
+                            }
+                        }
+                    }
+                    StopReason::P2p(result) => {
+                        events::publish(IpcEvent::ServerStopped);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        let _ = shutdown_tx.send(true);
+                        let _ = ipc_task.await;
+                        match result {
+                            Ok(Ok(())) => {
+                                Err(anyhow::anyhow!("P2P transfer server exited unexpectedly"))
+                            }
+                            Ok(Err(error)) => Err(error.into()),
+                            Err(join_error) => Err(anyhow::anyhow!(
+                                "P2P transfer server panicked: {join_error}"
+                            )),
+                        }
+                    }
+                    StopReason::Signal(signal_name) => {
+                        println!("[daemon] received {signal_name}; shutting down");
+                        events::publish(IpcEvent::ServerStopped);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        let _ = shutdown_tx.send(true);
+                        p2p_task.abort();
+                        match ipc_task.await {
+                            Ok(Ok(())) => Ok(()),
+                            Ok(Err(error)) => Err(error.into()),
+                            Err(join_error) => Err(anyhow::anyhow!(
+                                "IPC server task panicked during shutdown: {join_error}"
+                            )),
+                        }
+                    }
+                };
+
                 if let Some(task) = discovery_task {
                     task.abort();
                 }
-                ipc_result?;
+                exit_result?;
             }
         }
     }
 
     Ok(())
+}
+
+async fn wait_for_termination_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        if let Err(error) = result {
+                            eprintln!("[daemon] failed listening for Ctrl+C signal: {error}");
+                        }
+                        "Ctrl+C"
+                    }
+                    _ = sigterm.recv() => "SIGTERM",
+                }
+            }
+            Err(error) => {
+                eprintln!("[daemon] failed installing SIGTERM handler: {error}");
+                let _ = tokio::signal::ctrl_c().await;
+                "Ctrl+C"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            eprintln!("[daemon] failed listening for Ctrl+C signal: {error}");
+        }
+        "Ctrl+C"
+    }
 }
 
 fn print_startup_banner(library_root: &std::path::Path, listen: SocketAddr) -> anyhow::Result<()> {

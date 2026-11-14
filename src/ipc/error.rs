@@ -20,6 +20,12 @@ pub enum IpcError {
     #[error("IPC frame has trailing bytes: decoded {bytes_read} bytes from {frame_len} bytes")]
     TrailingBytes { bytes_read: usize, frame_len: usize },
 
+    #[error("daemon returned error: {0}")]
+    RemoteError(String),
+
+    #[error("daemon IPC endpoint already in use: {0}")]
+    AlreadyRunning(String),
+
     #[error("unsupported platform: {0}")]
     UnsupportedPlatform(&'static str),
 }

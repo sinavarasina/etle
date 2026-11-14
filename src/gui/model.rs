@@ -1,28 +1,27 @@
 use std::{
-    collections::{BTreeSet, VecDeque},
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
-    str::FromStr,
     time::{Duration, Instant},
 };
 
 use etle::{
     config::load,
-    file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
+    file::descriptor::ShareId,
     ipc::{
-        message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
+        message::{IpcDaemonStatus, IpcEvent, IpcJobKind, IpcResponse, IpcShareSummary},
         path::default_ipc_socket_path,
     },
     state::paths::default_library_root,
 };
 
-use super::format::{fraction, human_bytes, non_empty};
+use super::format::{eta_text, fraction, human_bytes};
 
 pub const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 2;
-pub const DEFAULT_ACTIVITY_LIMIT: usize = 160;
+pub const DEFAULT_ACTIVITY_LIMIT: usize = 200;
 
 #[derive(Debug, Clone)]
 pub struct GuiInit {
+    pub default_socket_path: String,
     pub socket_path: String,
     pub auth_psk: String,
     pub download_parallelism: usize,
@@ -52,11 +51,14 @@ impl Default for GuiInit {
             .unwrap_or_else(|| default_ipc_socket_path(&library_root));
         let auth_psk = std::env::var("ETLE_AUTH_PSK")
             .ok()
-            .or_else(|| config.auth_psk())
+            .filter(|psk| !psk.trim().is_empty())
+            .or_else(|| config.auth_psk().filter(|psk| !psk.trim().is_empty()))
             .unwrap_or_default();
+        let socket_text = socket_path.display().to_string();
 
         Self {
-            socket_path: socket_path.display().to_string(),
+            default_socket_path: socket_text.clone(),
+            socket_path: socket_text,
             auth_psk,
             download_parallelism: config.parallel(),
             request_window: config.request_window(),
@@ -69,9 +71,24 @@ impl Default for GuiInit {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BannerTone {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiBanner {
+    pub tone: BannerTone,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferKind {
     Seed,
     Download,
+    Upload,
 }
 
 impl TransferKind {
@@ -79,6 +96,23 @@ impl TransferKind {
         match self {
             Self::Seed => "seed",
             Self::Download => "download",
+            Self::Upload => "upload",
+        }
+    }
+
+    pub const fn display_label(self) -> &'static str {
+        match self {
+            Self::Seed => "Seed",
+            Self::Download => "Download",
+            Self::Upload => "Upload",
+        }
+    }
+
+    pub const fn from_ipc(kind: IpcJobKind) -> Self {
+        match kind {
+            IpcJobKind::Seed => Self::Seed,
+            IpcJobKind::Download => Self::Download,
+            IpcJobKind::Upload => Self::Upload,
         }
     }
 }
@@ -113,6 +147,22 @@ impl TransferStatus {
     pub const fn is_finished(self) -> bool {
         matches!(self, Self::Done | Self::Failed)
     }
+
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferView {
+    pub id: String,
+    pub kind: TransferKind,
+    pub label: String,
+    pub status: TransferStatus,
+    pub progress_visible: bool,
+    pub fraction_milli: u16,
+    pub metrics_line: String,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +178,7 @@ pub struct GuiTransfer {
     pub total_bytes: u64,
     pub bytes_per_second: u64,
     pub detail: String,
+    pub started_at: Instant,
     pub updated_seq: u64,
 }
 
@@ -144,289 +195,194 @@ impl GuiTransfer {
         }
     }
 
-    pub fn compact_line(&self) -> String {
+    pub fn metrics_line(&self) -> String {
         let percent = self.fraction() * 100.0;
         let chunks = if self.total_chunks == 0 {
             "chunks --/--".to_string()
         } else {
-            format!("chunks {}/{}", self.completed_chunks, self.total_chunks)
+            format!("{}/{} chunks", self.completed_chunks, self.total_chunks)
         };
         let bytes = if self.total_bytes == 0 {
-            "bytes --/--".to_string()
+            "--/--".to_string()
         } else {
             format!(
-                "bytes {}/{}",
+                "{} / {}",
                 human_bytes(self.bytes_done),
                 human_bytes(self.total_bytes)
             )
         };
-        let speed = if self.bytes_per_second == 0 {
+        let speed = if self.status.is_finished() {
+            "0 B/s".to_string()
+        } else if self.bytes_per_second == 0 {
             "--/s".to_string()
         } else {
             format!("{}/s", human_bytes(self.bytes_per_second))
         };
+        let timing = if self.status.is_active() {
+            if let Some(eta) = eta_text(self.bytes_done, self.total_bytes, self.bytes_per_second) {
+                format!("ETA {eta}")
+            } else {
+                format!("{}s", self.started_at.elapsed().as_secs())
+            }
+        } else {
+            format!("{}s", self.started_at.elapsed().as_secs())
+        };
+        format!("{percent:5.1}% · {bytes} · {chunks} · {speed} · {timing}")
+    }
 
-        let phase = if self.detail.trim().is_empty() {
-            self.kind.label().to_string()
+    pub fn compact_line(&self) -> String {
+        let percent = self.fraction() * 100.0;
+        if self.bytes_per_second > 0 && self.status.is_active() {
+            format!("{percent:.1}% · {}/s", human_bytes(self.bytes_per_second))
+        } else if self.total_bytes > 0 {
+            format!(
+                "{percent:.1}% · {} / {}",
+                human_bytes(self.bytes_done),
+                human_bytes(self.total_bytes)
+            )
+        } else if self.total_chunks > 0 {
+            format!(
+                "{percent:.1}% · {}/{} chunks",
+                self.completed_chunks, self.total_chunks
+            )
         } else {
             self.detail.clone()
-        };
-
-        format!(
-            "{} {:<7} {:<24} {:>6.1}% · {chunks} · {bytes} · {speed}",
-            self.status.icon(),
-            self.status.label(),
-            phase,
-            percent,
-        )
-    }
-
-    pub fn hide_key(&self) -> String {
-        if let Some(share_id) = self.share_id {
-            format!("{}:{}:{}", self.kind.label(), self.status.label(), share_id)
-        } else {
-            format!("{}:{}:{}", self.kind.label(), self.status.label(), self.id)
         }
     }
+
+    pub fn to_view(&self) -> TransferView {
+        let progress_visible =
+            self.status.is_active() || self.total_chunks > 0 || self.total_bytes > 0;
+        let fraction_milli = (self.fraction().clamp(0.0, 1.0) * 1000.0).round() as u16;
+        TransferView {
+            id: self.id.clone(),
+            kind: self.kind,
+            label: self.label.clone(),
+            status: self.status,
+            progress_visible,
+            fraction_milli,
+            metrics_line: self.metrics_line(),
+            detail: self.detail.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareRowData {
+    pub summary: IpcShareSummary,
+    pub is_downloading: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeedFileEntry {
+    pub path: PathBuf,
+    pub size_bytes: u64,
+}
+
+impl SeedFileEntry {
+    pub fn from_path(path: PathBuf) -> Self {
+        let size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        Self { path, size_bytes }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DownloadFormRequest {
+    pub share_id: String,
+    pub peers: String,
+    pub output: String,
+    pub auth_psk: String,
+    pub discovery_multicast: String,
+    pub parallelism: usize,
+    pub request_window: usize,
+    pub discovery_port: u16,
+    pub discovery_timeout_ms: u64,
+    pub resume: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonSettingsSnapshot {
+    pub connected: bool,
+    pub watching: bool,
+    pub watch_connecting: bool,
+    pub active_socket_path: String,
+    pub daemon_status: Option<IpcDaemonStatus>,
+    pub pending_shutdown_confirm: bool,
+    pub auto_refresh: bool,
+    pub clear_activity_on_task: bool,
+    pub refresh_interval_secs: u64,
+    pub activity_limit: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcRequestKind {
     Ping,
-    ListShares,
     Seed,
     Download,
     DeleteShare,
+    Shutdown,
 }
 
 impl IpcRequestKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Ping => "ping",
-            Self::ListShares => "refresh",
             Self::Seed => "seed",
             Self::Download => "download",
             Self::DeleteShare => "delete",
+            Self::Shutdown => "shutdown",
         }
     }
-}
 
-pub struct EtleGui {
-    pub active_socket_path: String,
-    pub socket_draft: String,
-    pub connected: bool,
-    pub watching: bool,
-    pub watch_generation: u64,
-    pub auto_refresh: bool,
-    pub clear_activity_on_task: bool,
-    pub refresh_interval_secs: u64,
-    pub activity_limit: usize,
-    pub selected_share: Option<usize>,
-    pub pending_delete_share: Option<ShareId>,
-    pub shares: Vec<IpcShareSummary>,
-    pub transfers: Vec<GuiTransfer>,
-    pub hidden_finished_transfers: BTreeSet<String>,
-    pub activity: VecDeque<String>,
-    pub last_activity_message: Option<String>,
-    pub status: String,
-    pub latest_progress: String,
-    pub progress_fraction: f64,
-    pub next_transfer_seq: u64,
-    pub last_auto_refresh: Instant,
-    pub refresh_inflight: bool,
-
-    pub seed_path: String,
-    pub seed_files: Vec<PathBuf>,
-    pub selected_seed_file: Option<usize>,
-    pub seed_chunk_size: usize,
-
-    pub download_share_id: String,
-    pub download_peers: String,
-    pub output_path: String,
-    pub download_parallelism: usize,
-    pub download_request_window: usize,
-    pub discovery_port: u16,
-    pub discovery_timeout_ms: u64,
-    pub discovery_multicast: Ipv4Addr,
-    pub resume: bool,
-    pub auth_psk: String,
-}
-
-impl EtleGui {
-    pub fn new(init: GuiInit) -> Self {
-        let mut model = Self {
-            active_socket_path: init.socket_path.clone(),
-            socket_draft: init.socket_path,
-            connected: false,
-            watching: false,
-            watch_generation: 0,
-            auto_refresh: true,
-            clear_activity_on_task: true,
-            refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
-            activity_limit: DEFAULT_ACTIVITY_LIMIT,
-            selected_share: None,
-            pending_delete_share: None,
-            shares: Vec::new(),
-            transfers: Vec::new(),
-            hidden_finished_transfers: BTreeSet::new(),
-            activity: VecDeque::new(),
-            last_activity_message: None,
-            status: "offline".to_string(),
-            latest_progress: "idle".to_string(),
-            progress_fraction: 0.0,
-            next_transfer_seq: 1,
-            last_auto_refresh: Instant::now(),
-            refresh_inflight: false,
-
-            seed_path: String::new(),
-            seed_files: Vec::new(),
-            selected_seed_file: None,
-            seed_chunk_size: DEFAULT_CHUNK_SIZE,
-
-            download_share_id: String::new(),
-            download_peers: String::new(),
-            output_path: String::new(),
-            download_parallelism: init.download_parallelism,
-            download_request_window: init.request_window,
-            discovery_port: init.discovery_port,
-            discovery_timeout_ms: init.discovery_timeout_ms,
-            discovery_multicast: init.discovery_multicast,
-            resume: true,
-            auth_psk: init.auth_psk,
-        };
-
-        if let Some(warning) = init.startup_warning {
-            model.push_log(warning);
+    pub const fn timeout(self) -> Duration {
+        match self {
+            Self::Ping | Self::Shutdown => Duration::from_secs(5),
+            Self::Seed | Self::Download | Self::DeleteShare => Duration::from_secs(30),
         }
-
-        model
-    }
-
-    pub fn refresh_due(&self) -> bool {
-        self.auto_refresh
-            && !self.refresh_inflight
-            && self.last_auto_refresh.elapsed()
-                >= Duration::from_secs(self.refresh_interval_secs.max(1))
-    }
-
-    pub fn build_download_command_from(
-        &self,
-        share_id_text: &str,
-        peers_text: &str,
-        output_text: &str,
-        auth_psk_text: &str,
-        discovery_multicast_text: &str,
-    ) -> Result<(IpcCommand, ShareId), String> {
-        let share_id =
-            ShareId::from_str(share_id_text.trim()).map_err(|_| "invalid share id".to_string())?;
-        let peers = parse_peers(peers_text)?;
-        let output = non_empty(output_text.trim()).map(PathBuf::from);
-        let auth_psk = non_empty(auth_psk_text.trim())
-            .or_else(|| non_empty(&self.auth_psk))
-            .map(ToOwned::to_owned);
-        let discovery_multicast = discovery_multicast_text
-            .trim()
-            .parse()
-            .map_err(|error| format!("invalid multicast address: {error}"))?;
-
-        let command = if self.resume {
-            IpcCommand::Download {
-                share_id,
-                peers,
-                output,
-                parallelism: self.download_parallelism,
-                request_window: self.download_request_window.max(1),
-                discovery_port: self.discovery_port,
-                discovery_timeout_ms: self.discovery_timeout_ms.max(1),
-                discovery_multicast,
-                auth_psk,
-            }
-        } else {
-            IpcCommand::DownloadFresh {
-                share_id,
-                peers,
-                output,
-                parallelism: self.download_parallelism,
-                request_window: self.download_request_window.max(1),
-                discovery_port: self.discovery_port,
-                discovery_timeout_ms: self.discovery_timeout_ms.max(1),
-                discovery_multicast,
-                auth_psk,
-            }
-        };
-
-        Ok((command, share_id))
     }
 }
 
 #[derive(Debug)]
-pub enum AppInput {
-    ApplySocketText(String),
-    Connect,
-    Refresh,
-    AutoRefreshTick,
-    StartWatch,
-    IpcResponse {
+pub enum AppCmd {
+    SyncSnapshot {
+        socket_path: String,
+        status_result: Result<IpcResponse, String>,
+        shares_result: Result<IpcResponse, String>,
+    },
+    CommandResponse {
         socket_path: String,
         kind: IpcRequestKind,
         result: Result<IpcResponse, String>,
     },
-    IpcEvent {
+    WatchConnected {
+        generation: u64,
+    },
+    WatchEvent {
         generation: u64,
         event: IpcEvent,
     },
-    IpcWatchStopped {
+    WatchStopped {
         generation: u64,
         error: String,
     },
-
-    SelectShare(usize),
-    CopySelectedShareId,
-    DeleteSelectedShare,
-    ConfirmDeleteSelectedShare,
-    CancelDeleteShare,
-    ClearLog,
-    ClearFinishedTransfers,
-
-    AddSeedPathText(String),
-    AddSeedFile(PathBuf),
-    BrowseSeedFiles,
-    SelectSeedFile(usize),
-    RemoveSelectedSeedFile,
-    ClearSeedFiles,
-    SetSeedChunkSize(usize),
-    StartSeedSelected,
-
-    SetParallelism(usize),
-    SetRequestWindow(usize),
-    SetDiscoveryPort(u16),
-    SetDiscoveryTimeout(u64),
-    SetResume(bool),
-    StartDownloadFromForm {
-        share_id: String,
-        peers: String,
-        output: String,
-        auth_psk: String,
-        discovery_multicast: String,
-    },
-    ApplySettings {
-        socket_path: String,
-        auth_psk: String,
-    },
-
-    SetAutoRefresh(bool),
-    SetClearActivityOnTask(bool),
-    SetRefreshInterval(u64),
-    SetActivityLimit(usize),
 }
 
-pub fn parse_peers(input: &str) -> Result<Vec<SocketAddr>, String> {
-    input
-        .split(|character: char| character == ',' || character == '\n' || character.is_whitespace())
-        .filter_map(non_empty)
-        .map(|peer| {
-            peer.parse::<SocketAddr>()
-                .map_err(|error| format!("invalid peer `{peer}`: {error}"))
+pub fn parse_peers(raw: &str) -> Result<Vec<SocketAddr>, String> {
+    raw.split([',', '\n'])
+        .flat_map(str::split_whitespace)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            entry
+                .parse::<SocketAddr>()
+                .map_err(|_| format!("invalid peer socket address: {entry}"))
         })
         .collect()
+}
+
+pub fn share_is_complete(share: &IpcShareSummary) -> bool {
+    if share.total_chunks == 0 {
+        return matches!(share.mode.as_deref(), Some("seeding" | "completed"));
+    }
+
+    share.completed_chunks >= share.total_chunks
 }

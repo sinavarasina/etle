@@ -1,3 +1,5 @@
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
 use super::prelude::*;
 use super::{options::DiscoveryOptions, wire::DiscoveryMessage};
 
@@ -28,7 +30,7 @@ pub async fn serve_with(
     let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), options.port);
     let verbose = options.verbose;
 
-    let socket = UdpSocket::bind(bind_addr).await?;
+    let socket = bind_discovery_socket(bind_addr)?;
     socket.set_broadcast(true)?;
 
     if let Some(multicast) = options.multicast {
@@ -45,7 +47,25 @@ pub async fn serve_with(
     let mut buffer = [0_u8; MAX_DISCOVERY_PACKET_SIZE];
 
     loop {
-        let (read, source) = socket.recv_from(&mut buffer).await?;
+        let (read, source) = match socket.recv_from(&mut buffer).await {
+            Ok(packet) => packet,
+            Err(error) => {
+                if verbose {
+                    println!("[discovery] recv_from error: {error}");
+                }
+                time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
+        };
+
+        if p2p_listen.ip().is_loopback() && !source.ip().is_loopback() {
+            if verbose {
+                println!(
+                    "[discovery] drop: non-loopback query from {source} while p2p_listen={p2p_listen}"
+                );
+            }
+            continue;
+        }
 
         if verbose {
             println!("[discovery] udp packet from {source}, {read} bytes");
@@ -122,4 +142,21 @@ pub async fn serve_with(
             }
         }
     }
+}
+
+fn bind_discovery_socket(bind_addr: SocketAddr) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    let _ = set_unix_reuse_port(&socket);
+    socket.set_nonblocking(true)?;
+    socket.bind(&SockAddr::from(bind_addr))?;
+
+    let std_socket: std::net::UdpSocket = socket.into();
+    UdpSocket::from_std(std_socket)
+}
+
+#[cfg(unix)]
+fn set_unix_reuse_port(socket: &Socket) -> std::io::Result<()> {
+    socket.set_reuse_port(true)
 }

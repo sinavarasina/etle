@@ -6,13 +6,14 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ETLE_BUILD_DATE");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
     println!("cargo:rerun-if-env-changed=ETLE_RELEASE_TAG");
     println!("cargo:rerun-if-env-changed=GITHUB_ACTIONS");
     println!("cargo:rerun-if-env-changed=GITHUB_REF_NAME");
     println!("cargo:rerun-if-env-changed=GITHUB_REF_TYPE");
     println!("cargo:rerun-if-env-changed=GITHUB_REPOSITORY");
     println!("cargo:rerun-if-env-changed=GITHUB_RUN_ID");
-    println!("cargo:rerun-if-changed=.git/HEAD");
+    emit_git_rerun_hints();
 
     emit(
         "ETLE_GIT_COMMIT",
@@ -44,7 +45,7 @@ fn main() {
     emit(
         "ETLE_BUILD_DATE",
         env_value("ETLE_BUILD_DATE")
-            .or_else(|| git(&["show", "-s", "--format=%cI", "HEAD"]))
+            .or_else(|| env_value("SOURCE_DATE_EPOCH").map(|epoch| format!("unix:{epoch}")))
             .unwrap_or_else(unix_now_string),
     );
     emit(
@@ -131,4 +132,39 @@ fn unix_now_string() -> String {
         .unwrap_or(0);
 
     format!("unix:{seconds}")
+}
+
+fn emit_git_rerun_hints() {
+    let Some(git_dir) = git(&["rev-parse", "--git-dir"]).map(std::path::PathBuf::from) else {
+        return;
+    };
+    let common_dir = git(&["rev-parse", "--git-common-dir"])
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| git_dir.clone());
+
+    let head_path = git_dir.join("HEAD");
+    if head_path.exists() {
+        println!("cargo:rerun-if-changed={}", head_path.display());
+    }
+
+    let index_path = git_dir.join("index");
+    if index_path.exists() {
+        println!("cargo:rerun-if-changed={}", index_path.display());
+    }
+
+    let packed_refs = common_dir.join("packed-refs");
+    if packed_refs.exists() {
+        println!("cargo:rerun-if-changed={}", packed_refs.display());
+    }
+
+    if let Ok(head) = std::fs::read_to_string(&head_path)
+        && let Some(reference) = head.trim().strip_prefix("ref: ")
+    {
+        let ref_path = common_dir.join(reference.trim());
+        if ref_path.exists() {
+            println!("cargo:rerun-if-changed={}", ref_path.display());
+        } else if let Some(parent) = ref_path.parent().filter(|parent| parent.exists()) {
+            println!("cargo:rerun-if-changed={}", parent.display());
+        }
+    }
 }

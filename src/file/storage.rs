@@ -1,16 +1,16 @@
 use std::{
-    collections::BTreeMap,
-    fs,
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File},
     path::{Path, PathBuf},
 };
 
 use crate::{
     crypto::{
         aead::{SymmetricKey, build_chunk_aad, decrypt_chunk, encrypt_chunk, generate_nonce},
-        hash::{FileId, hash_chunk, hash_file},
+        hash::{FileId, hash_chunk},
     },
     file::{
-        chunker::{PlainChunk, join_chunks, read_file_chunks},
+        chunker::{PlainChunk, join_chunks, read_full_or_eof},
         error::FileError,
         manifest::{ChunkMeta, Manifest},
     },
@@ -37,12 +37,40 @@ pub fn encrypt_file(
     key: &SymmetricKey,
     chunk_size: usize,
 ) -> Result<EncryptedFile, FileError> {
-    let path = path.as_ref();
-    let file_id = hash_file(path)?;
-    let file_size = fs::metadata(path)?.len();
-    let file_name = file_name(path);
-    let plain_chunks = read_file_chunks(path, chunk_size)?;
+    if chunk_size == 0 {
+        return Err(FileError::InvalidChunkSize(chunk_size));
+    }
 
+    let path = path.as_ref();
+    let file_name = file_name(path);
+    let mut file = File::open(path)?;
+    let mut plain_chunks = Vec::new();
+    let mut hasher = blake3::Hasher::new();
+    let mut file_size = 0_u64;
+    let mut next_index = Some(0_u32);
+
+    loop {
+        let mut buffer = vec![0_u8; chunk_size];
+        let read = read_full_or_eof(&mut file, &mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        let index = next_index.ok_or(FileError::TooManyChunks)?;
+        next_index = index.checked_add(1);
+
+        buffer.truncate(read);
+        hasher.update(&buffer);
+        file_size = file_size
+            .checked_add(read as u64)
+            .ok_or(FileError::PackageTooLarge)?;
+        plain_chunks.push(PlainChunk {
+            index,
+            data: buffer,
+        });
+    }
+
+    let file_id = FileId(*hasher.finalize().as_bytes());
     let mut chunks = BTreeMap::new();
     let mut chunk_metas = Vec::with_capacity(plain_chunks.len());
 
@@ -86,8 +114,16 @@ pub fn decrypt_to_bytes(
     key: &SymmetricKey,
 ) -> Result<Vec<u8>, FileError> {
     let mut plain_chunks = Vec::with_capacity(encrypted.manifest.chunks.len());
+    let mut seen_indices = BTreeSet::new();
 
     for meta in &encrypted.manifest.chunks {
+        if !seen_indices.insert(meta.index) {
+            return Err(FileError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("duplicate chunk metadata for index {}", meta.index),
+            )));
+        }
+
         let encrypted_chunk = encrypted
             .chunks
             .get(&meta.index)
@@ -98,8 +134,25 @@ pub fn decrypt_to_bytes(
             return Err(FileError::ChunkHashMismatch(meta.index));
         }
 
+        let actual_encrypted_size = encrypted_chunk.data.len() as u64;
+        if actual_encrypted_size != meta.encrypted_size {
+            return Err(FileError::ChunkSizeMismatch {
+                index: meta.index,
+                expected: meta.encrypted_size,
+                actual: actual_encrypted_size,
+            });
+        }
+
         let aad = build_chunk_aad(encrypted.manifest.file_id, meta.index, meta.plain_size);
         let plaintext = decrypt_chunk(key, meta.nonce, &encrypted_chunk.data, &aad)?;
+        let actual_plain_size = plaintext.len() as u64;
+        if actual_plain_size != meta.plain_size {
+            return Err(FileError::ChunkSizeMismatch {
+                index: meta.index,
+                expected: meta.plain_size,
+                actual: actual_plain_size,
+            });
+        }
 
         plain_chunks.push(PlainChunk {
             index: meta.index,
@@ -108,8 +161,11 @@ pub fn decrypt_to_bytes(
     }
 
     let output = join_chunks(&plain_chunks);
-    let output_hash = FileId(crate::crypto::hash::hash_bytes(&output));
+    if output.len() as u64 != encrypted.manifest.file_size {
+        return Err(FileError::FinalHashMismatch);
+    }
 
+    let output_hash = FileId(crate::crypto::hash::hash_bytes(&output));
     if output_hash != encrypted.manifest.file_id {
         return Err(FileError::FinalHashMismatch);
     }

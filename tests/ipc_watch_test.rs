@@ -83,6 +83,66 @@ async fn ipc_event_subscription_does_not_block_other_commands() {
         }
     );
 
+    let stopped: IpcEvent = tokio::time::timeout(
+        Duration::from_secs(1),
+        ipc_codec::receive_ipc_message(&mut watch_stream),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(stopped, IpcEvent::ServerStopped);
+
+    server.await.unwrap().unwrap();
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn subscribe_ipc_events_exits_cleanly_on_server_stopped() {
+    print_banner("subscribe_ipc_events_exits_cleanly_on_server_stopped");
+    let root = temp_dir("ipc-subscribe-stop");
+    let socket_path = root.join(".etle").join("etled.sock");
+    fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
+
+    let server_root = root.clone();
+    let server_socket = socket_path.clone();
+    let server =
+        tokio::spawn(
+            async move { ipc_server::listener::forever(server_socket, server_root).await },
+        );
+
+    wait_for_ping(&socket_path).await;
+
+    let watch_socket = socket_path.clone();
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let subscriber = tokio::spawn(async move {
+        ipc_client::subscribe_ipc_events(&watch_socket, |event| {
+            let _ = events_tx.send(event);
+        })
+        .await
+    });
+
+    // Give the subscriber task a moment to complete SubscribeEvents handshake before shutdown.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let shutdown = ipc_client::send_ipc_command(&socket_path, IpcCommand::Shutdown)
+        .await
+        .unwrap();
+    assert!(matches!(shutdown, IpcResponse::Ack { .. }));
+
+    tokio::time::timeout(Duration::from_secs(2), subscriber)
+        .await
+        .expect("subscriber should stop promptly on ServerStopped")
+        .unwrap()
+        .expect("subscribe_ipc_events should return Ok(()) on ServerStopped");
+
+    let mut saw_stopped = false;
+    while let Ok(event) = events_rx.try_recv() {
+        if matches!(event, IpcEvent::ServerStopped) {
+            saw_stopped = true;
+        }
+    }
+    assert!(saw_stopped, "expected ServerStopped event before exit");
+
     server.await.unwrap().unwrap();
     let _ = fs::remove_dir_all(root);
 }

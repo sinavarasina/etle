@@ -46,8 +46,15 @@ impl EtleSecret {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
-        let (secret, bytes_read): (Self, usize) =
-            bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
+        if bytes.len() > crate::file::manifest::MAX_METADATA_DECODE_BYTES {
+            return Err(bincode_next::error::DecodeError::LimitExceeded);
+        }
+
+        let (secret, bytes_read): (Self, usize) = bincode_next::serde::decode_from_slice(
+            bytes,
+            bincode_next::config::standard()
+                .with_limit::<{ crate::file::manifest::MAX_METADATA_DECODE_BYTES }>(),
+        )?;
 
         if bytes_read != bytes.len() {
             return Err(bincode_next::error::DecodeError::OtherString(format!(

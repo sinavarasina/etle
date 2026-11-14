@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub const ETLE_WIRE_PROTOCOL_VERSION: u16 = 3;
 pub const CAPABILITY_RAW_CHUNK_FRAME: &str = "raw-chunk-frame-v1";
 pub const CAPABILITY_WINDOWED_REQUESTS: &str = "windowed-requests-v1";
+pub const CAPABILITY_PSK_AUTH: &str = "psk-auth-v1";
 
 use crate::{
     crypto::{aead::Nonce, key_exchange::PublicKeyBytes},

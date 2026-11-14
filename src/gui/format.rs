@@ -33,6 +33,46 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
+pub fn eta_text(bytes_done: u64, total_bytes: u64, bytes_per_second: u64) -> Option<String> {
+    if bytes_per_second == 0 || total_bytes == 0 || bytes_done >= total_bytes {
+        return None;
+    }
+    let remaining = total_bytes.saturating_sub(bytes_done);
+    let secs = remaining.div_ceil(bytes_per_second);
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    if hours > 0 {
+        Some(format!("{hours}h {minutes:02}m"))
+    } else if minutes > 0 {
+        Some(format!("{minutes}m {seconds:02}s"))
+    } else {
+        Some(format!("{seconds}s"))
+    }
+}
+
+pub fn share_mode_display(
+    mode: Option<&str>,
+    is_downloading_active: bool,
+    is_complete: bool,
+) -> (&'static str, &'static str) {
+    match mode {
+        Some("seeding") => ("Seeding", "etle-badge-ok"),
+        Some("completed") => ("Completed", "etle-badge-ok"),
+        Some("downloading") => {
+            if is_downloading_active {
+                ("Downloading", "etle-badge-accent")
+            } else if is_complete {
+                ("Ready", "etle-badge-ok")
+            } else {
+                ("Partial (Paused)", "etle-badge-warn")
+            }
+        }
+        Some("paused") => ("Paused", "etle-badge-warn"),
+        _ => ("Unknown", "etle-badge-muted"),
+    }
+}
+
 pub fn file_label(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())

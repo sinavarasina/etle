@@ -1,7 +1,7 @@
 pub(super) use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
-    io::{BufWriter, ErrorKind, Read, Write},
+    io::{BufWriter, ErrorKind, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, mpsc},
@@ -24,10 +24,13 @@ pub(super) use crate::{
         manifest::{ChunkMeta, Manifest},
         storage::{EncryptedChunk, EncryptedFile, decrypt_to_file},
     },
-    ipc::{message::IpcEvent, server::events},
+    ipc::{
+        message::{IpcActiveJob, IpcEvent, IpcJobKind, IpcShareSummary},
+        server::events,
+    },
     network::{
         error::NetworkError,
-        handshake::{client_protocol_handshake, server_protocol_handshake},
+        handshake::{client_transfer_handshake, server_transfer_handshake},
         key_exchange::{
             client_authenticated_session_key_exchange, client_session_key_exchange,
             server_authenticated_session_key_exchange, server_session_key_exchange,

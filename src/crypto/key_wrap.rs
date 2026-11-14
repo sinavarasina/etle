@@ -1,4 +1,3 @@
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{
@@ -16,7 +15,7 @@ pub struct WrappedFileKey {
 #[must_use]
 pub fn generate_file_key() -> SymmetricKey {
     let mut key = [0_u8; 32];
-    OsRng.fill_bytes(&mut key);
+    getrandom::fill(&mut key).expect("system random number generator failed");
     SymmetricKey(key)
 }
 

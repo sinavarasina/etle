@@ -96,10 +96,6 @@ pub fn args_request_version(args: impl IntoIterator<Item = String>) -> bool {
         )
 }
 
-fn short_commit() -> &'static str {
-    if GIT_COMMIT.len() >= 7 {
-        &GIT_COMMIT[..7]
-    } else {
-        GIT_COMMIT
-    }
+fn short_commit() -> String {
+    GIT_COMMIT.chars().take(7).collect()
 }

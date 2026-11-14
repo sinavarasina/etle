@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use x25519_dalek::{EphemeralSecret, PublicKey};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::crypto::{aead::SymmetricKey, error::CryptoError, hash::FileId};
 
@@ -39,6 +40,20 @@ impl AuthPsk {
     }
 }
 
+impl Drop for AuthPsk {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Zeroize for AuthPsk {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for AuthPsk {}
+
 impl fmt::Debug for AuthPsk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AuthPsk(<redacted>)")
@@ -61,7 +76,7 @@ pub struct EphemeralKeypair {
 impl EphemeralKeypair {
     #[must_use]
     pub fn generate() -> Self {
-        let secret = EphemeralSecret::random_from_rng(rand_core::OsRng);
+        let secret = EphemeralSecret::random();
         let public = PublicKey::from(&secret);
 
         Self {
@@ -80,13 +95,18 @@ impl EphemeralKeypair {
         peer_public_key: PublicKeyBytes,
     ) -> Result<SharedSecretBytes, CryptoError> {
         let peer_public = PublicKey::from(peer_public_key.0);
-        let shared = self.secret.diffie_hellman(&peer_public).to_bytes();
+        let shared = self.secret.diffie_hellman(&peer_public);
 
-        if shared.iter().all(|byte| *byte == 0) {
+        if !shared.was_contributory() {
             return Err(CryptoError::InvalidPublicKey);
         }
 
-        Ok(SharedSecretBytes(shared))
+        let bytes = shared.to_bytes();
+        if bytes.iter().all(|byte| *byte == 0) {
+            return Err(CryptoError::InvalidPublicKey);
+        }
+
+        Ok(SharedSecretBytes(bytes))
     }
 }
 
@@ -113,10 +133,12 @@ pub fn derive_session_key_with_transcript(
     material.extend_from_slice(&client_public_key.0);
     material.extend_from_slice(&server_public_key.0);
 
-    SymmetricKey(blake3::derive_key(
+    let key = SymmetricKey(blake3::derive_key(
         "etle v1 x25519 transcript-bound session key",
         &material,
-    ))
+    ));
+    material.zeroize();
+    key
 }
 
 /// Computes a PSK proof for the X25519 transcript and derived session key.
@@ -148,12 +170,7 @@ pub fn derive_auth_tag(
 
 #[must_use]
 pub fn auth_tags_equal(left: &AuthTag, right: &AuthTag) -> bool {
-    let diff = left
-        .iter()
-        .zip(right.iter())
-        .fold(0_u8, |acc, (left, right)| acc | (left ^ right));
-
-    diff == 0
+    constant_time_eq::constant_time_eq_n(left, right)
 }
 
 #[must_use]
@@ -162,7 +179,9 @@ pub fn derive_file_key(shared_secret: SharedSecretBytes, file_id: FileId) -> Sym
     material.extend_from_slice(&shared_secret.0);
     material.extend_from_slice(file_id.as_bytes());
 
-    SymmetricKey(blake3::derive_key("etle v1 x25519 file key", &material))
+    let key = SymmetricKey(blake3::derive_key("etle v1 x25519 file key", &material));
+    material.zeroize();
+    key
 }
 
 #[cfg(test)]

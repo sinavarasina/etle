@@ -7,7 +7,10 @@ use etle::{
     file::descriptor::ShareId,
     ipc::{
         codec::{self as ipc_codec, MAX_IPC_FRAME_SIZE},
-        message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
+        message::{
+            IpcActiveJob, IpcCommand, IpcDaemonStatus, IpcEvent, IpcJobKind, IpcResponse,
+            IpcShareSummary,
+        },
         path as ipc_path,
     },
 };
@@ -44,6 +47,8 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
     let summary = IpcShareSummary {
         share_id,
         name: "sample.webm".to_string(),
+        total_bytes: 5 * 1024 * 1024,
+        chunk_size: 1024 * 1024,
         completed_chunks: 3,
         total_chunks: 5,
         has_secret: true,
@@ -65,6 +70,77 @@ async fn ipc_codec_roundtrips_command_response_and_event() {
         .unwrap();
     let decoded_event: IpcEvent = ipc_codec::receive_ipc_message(&mut client).await.unwrap();
     assert_eq!(decoded_event, event);
+
+    let status_cmd = IpcCommand::GetStatus;
+    ipc_codec::send_ipc_message(&mut client, &status_cmd)
+        .await
+        .unwrap();
+    assert_eq!(
+        ipc_codec::receive_ipc_message::<_, IpcCommand>(&mut daemon)
+            .await
+            .unwrap(),
+        status_cmd
+    );
+
+    let job = IpcActiveJob {
+        job_id: "download-1".to_string(),
+        kind: IpcJobKind::Download,
+        share_id: Some(share_id),
+        label: "sample.webm".to_string(),
+        phase: "peer:received+verified".to_string(),
+        completed_chunks: 3,
+        total_chunks: 5,
+        bytes_done: 3 * 1024 * 1024,
+        total_bytes: 5 * 1024 * 1024,
+        bytes_per_second: 1024 * 1024,
+    };
+    let status_response = IpcResponse::Status(IpcDaemonStatus {
+        peer_id: "peer-1".to_string(),
+        listen: Some(listen),
+        library_root: PathBuf::from("/tmp/etle-lib"),
+        discovery_port: 7003,
+        auto_discovery: true,
+        auth_required: true,
+        share_count: 1,
+        active_jobs: vec![job.clone()],
+    });
+    ipc_codec::send_ipc_message(&mut daemon, &status_response)
+        .await
+        .unwrap();
+    assert_eq!(
+        ipc_codec::receive_ipc_message::<_, IpcResponse>(&mut client)
+            .await
+            .unwrap(),
+        status_response
+    );
+
+    for event in [
+        IpcEvent::JobStarted { job },
+        IpcEvent::JobCompleted {
+            job_id: "download-1".to_string(),
+            kind: IpcJobKind::Download,
+            share_id: Some(share_id),
+            label: "sample.webm".to_string(),
+            summary: "downloaded 5 chunks".to_string(),
+        },
+        IpcEvent::JobFailed {
+            job_id: "seed-1".to_string(),
+            kind: IpcJobKind::Seed,
+            share_id: None,
+            label: "broken.bin".to_string(),
+            error: "io error".to_string(),
+        },
+    ] {
+        ipc_codec::send_ipc_message(&mut daemon, &event)
+            .await
+            .unwrap();
+        assert_eq!(
+            ipc_codec::receive_ipc_message::<_, IpcEvent>(&mut client)
+                .await
+                .unwrap(),
+            event
+        );
+    }
 }
 
 #[cfg(unix)]

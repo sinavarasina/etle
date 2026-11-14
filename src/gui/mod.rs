@@ -1,10 +1,12 @@
 pub mod app;
+pub mod components;
 pub mod format;
 pub mod ipc;
 pub mod model;
+pub mod pages;
 pub mod progress;
+pub mod state;
 pub mod style;
-pub mod widgets;
 
 use relm4::RelmApp;
 

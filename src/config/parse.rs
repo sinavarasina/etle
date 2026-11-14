@@ -29,15 +29,32 @@ pub(super) fn parse(source: &str) -> Result<EtleConfig, ConfigError> {
         }
 
         match key {
-            "library_root" => config.library_root = Some(PathBuf::from(parse_string_value(value))),
-            "ipc_socket" => config.ipc_socket = Some(PathBuf::from(parse_string_value(value))),
-            "listen" => {
-                config.listen = Some(parse_value(line_number, key, &parse_string_value(value))?)
+            "library_root" => {
+                config.library_root =
+                    Some(PathBuf::from(parse_string_value(line_number, key, value)?))
             }
-            "discovery_port" => config.discovery_port = Some(parse_value(line_number, key, value)?),
+            "ipc_socket" => {
+                config.ipc_socket =
+                    Some(PathBuf::from(parse_string_value(line_number, key, value)?))
+            }
+            "listen" => {
+                let raw = parse_string_value(line_number, key, value)?;
+                config.listen = Some(parse_value(line_number, key, &raw)?);
+            }
+            "discovery_port" => {
+                let port: u16 = parse_value(line_number, key, value)?;
+                if port == 0 {
+                    return Err(ConfigError::InvalidValue {
+                        line: line_number,
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                config.discovery_port = Some(port);
+            }
             "discovery_multicast" => {
-                let multicast: Ipv4Addr =
-                    parse_value(line_number, key, &parse_string_value(value))?;
+                let raw = parse_string_value(line_number, key, value)?;
+                let multicast: Ipv4Addr = parse_value(line_number, key, &raw)?;
                 if !multicast.is_multicast() {
                     return Err(ConfigError::InvalidValue {
                         line: line_number,
@@ -48,11 +65,29 @@ pub(super) fn parse(source: &str) -> Result<EtleConfig, ConfigError> {
                 config.discovery_multicast = Some(multicast);
             }
             "discovery_timeout_ms" => {
-                config.discovery_timeout_ms = Some(parse_value(line_number, key, value)?)
+                let timeout_ms: u64 = parse_value(line_number, key, value)?;
+                if timeout_ms == 0 {
+                    return Err(ConfigError::InvalidValue {
+                        line: line_number,
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                config.discovery_timeout_ms = Some(timeout_ms);
             }
-            "request_window" => config.request_window = Some(parse_value(line_number, key, value)?),
+            "request_window" => {
+                let window: usize = parse_value(line_number, key, value)?;
+                if window == 0 {
+                    return Err(ConfigError::InvalidValue {
+                        line: line_number,
+                        key: key.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                config.request_window = Some(window);
+            }
             "parallel" => config.parallel = Some(parse_value(line_number, key, value)?),
-            "auth_psk" => config.auth_psk = Some(parse_string_value(value)),
+            "auth_psk" => config.auth_psk = Some(parse_string_value(line_number, key, value)?),
             _ => {
                 return Err(ConfigError::UnknownKey {
                     line: line_number,
@@ -76,20 +111,50 @@ where
     })
 }
 
-fn parse_string_value(value: &str) -> String {
+fn parse_string_value(line: usize, key: &str, value: &str) -> Result<String, ConfigError> {
     let value = value.trim();
-    if let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
-        return unescape_basic_string(inner);
+    let parsed = if let Some(after_open) = value.strip_prefix('"') {
+        parse_quoted_string(line, key, after_open)?
+    } else {
+        if value.contains('"') || value.chars().any(char::is_whitespace) {
+            return Err(ConfigError::InvalidValue {
+                line,
+                key: key.to_string(),
+                value: value.to_string(),
+            });
+        }
+        value.to_string()
+    };
+
+    if parsed.trim().is_empty() {
+        return Err(ConfigError::InvalidValue {
+            line,
+            key: key.to_string(),
+            value: value.to_string(),
+        });
     }
 
-    value.to_string()
+    Ok(parsed)
 }
 
-fn unescape_basic_string(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut chars = value.chars();
+fn parse_quoted_string(line: usize, key: &str, after_open: &str) -> Result<String, ConfigError> {
+    let mut output = String::with_capacity(after_open.len());
+    let mut chars = after_open.chars();
+    let mut closed = false;
 
     while let Some(ch) = chars.next() {
+        if ch == '"' {
+            if !chars.as_str().trim().is_empty() {
+                return Err(ConfigError::InvalidValue {
+                    line,
+                    key: key.to_string(),
+                    value: format!("\"{after_open}"),
+                });
+            }
+            closed = true;
+            break;
+        }
+
         if ch != '\\' {
             output.push(ch);
             continue;
@@ -100,15 +165,26 @@ fn unescape_basic_string(value: &str) -> String {
             Some('\\') => output.push('\\'),
             Some('n') => output.push('\n'),
             Some('t') => output.push('\t'),
-            Some(other) => {
-                output.push('\\');
-                output.push(other);
+            Some('r') => output.push('\r'),
+            _ => {
+                return Err(ConfigError::InvalidValue {
+                    line,
+                    key: key.to_string(),
+                    value: format!("\"{after_open}"),
+                });
             }
-            None => output.push('\\'),
         }
     }
 
-    output
+    if !closed {
+        return Err(ConfigError::InvalidValue {
+            line,
+            key: key.to_string(),
+            value: format!("\"{after_open}"),
+        });
+    }
+
+    Ok(output)
 }
 
 fn strip_comment(line: &str) -> String {
@@ -151,7 +227,9 @@ pub(super) fn expand_tilde_path(path: &Path) -> PathBuf {
         return home_dir().unwrap_or_else(|| path.to_path_buf());
     }
 
-    if let Some(rest) = value.strip_prefix("~/")
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
         && let Some(home) = home_dir()
     {
         return home.join(rest);
@@ -161,5 +239,5 @@ pub(super) fn expand_tilde_path(path: &Path) -> PathBuf {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from)
+    crate::state::paths::home_dir_from_env()
 }

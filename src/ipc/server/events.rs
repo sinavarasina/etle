@@ -6,7 +6,7 @@ pub fn publish(event: IpcEvent) {
     let _ = ipc_event_bus().send(event);
 }
 
-fn subscribe() -> broadcast::Receiver<IpcEvent> {
+pub(super) fn subscribe() -> broadcast::Receiver<IpcEvent> {
     ipc_event_bus().subscribe()
 }
 
@@ -18,12 +18,13 @@ fn ipc_event_bus() -> &'static broadcast::Sender<IpcEvent> {
     })
 }
 
-pub(super) async fn serve_subscription<W>(stream: &mut W) -> Result<(), IpcError>
+pub(super) async fn serve_subscription<W>(
+    stream: &mut W,
+    mut events: broadcast::Receiver<IpcEvent>,
+) -> Result<(), IpcError>
 where
     W: AsyncWrite + Unpin,
 {
-    let mut events = subscribe();
-
     if let Err(error) = send_ipc_message(
         stream,
         &IpcResponse::Ack {

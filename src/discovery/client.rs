@@ -42,9 +42,13 @@ pub async fn peers_with(
         }
 
         let remaining = deadline - now;
-        let result = time::timeout(remaining, socket.recv_from(&mut buffer)).await;
-        let Ok(Ok((read, source))) = result else {
-            break;
+        let recv_result = match time::timeout(remaining, socket.recv_from(&mut buffer)).await {
+            Ok(result) => result,
+            Err(_elapsed) => break,
+        };
+        let (read, source) = match recv_result {
+            Ok(packet) => packet,
+            Err(_) => continue,
         };
 
         let Ok(DiscoveryMessage::Response {
@@ -63,10 +67,10 @@ pub async fn peers_with(
             continue;
         }
 
-        let peer_addr = if listen_addr.ip().is_unspecified() {
-            SocketAddr::new(source.ip(), listen_port)
-        } else {
-            listen_addr
+        let Some(peer_addr) =
+            super::network::resolve_discovered_peer_addr(listen_addr, listen_port, source.ip())
+        else {
+            continue;
         };
 
         if instance_id.is_empty() {

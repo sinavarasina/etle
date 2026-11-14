@@ -1,7 +1,7 @@
 #[cfg(feature = "cli")]
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 #[cfg(feature = "cli")]
@@ -13,8 +13,11 @@ use etle::{
     config::load,
     file::{chunker::DEFAULT_CHUNK_SIZE, descriptor::ShareId},
     ipc::{
-        client::{send_ipc_command, subscribe_ipc_events},
-        message::{IpcCommand, IpcEvent, IpcResponse, IpcShareSummary},
+        client::{EventSubscription, send_ipc_command, subscribe_ipc_events},
+        message::{
+            IpcActiveJob, IpcCommand, IpcDaemonStatus, IpcEvent, IpcJobKind, IpcResponse,
+            IpcShareSummary,
+        },
         path::default_ipc_socket_path,
     },
     state::paths::default_library_root,
@@ -54,6 +57,10 @@ enum Command {
         /// Chunk size in bytes.
         #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
         chunk_size: usize,
+
+        /// Follow live seed progress until the job completes.
+        #[arg(short, long)]
+        follow: bool,
     },
 
     /// List local shares through etled.
@@ -83,7 +90,7 @@ enum Command {
 
         /// Reuse verified encrypted chunks from the daemon library when available.
         /// This is enabled by default; the flag is accepted for explicitness.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "no_resume")]
         resume: bool,
 
         /// Ignore existing local chunks and fetch chunks from peers again.
@@ -114,6 +121,10 @@ enum Command {
         /// IPv4 multicast group used in addition to broadcast for LAN peer discovery.
         #[arg(long, value_name = "IPv4")]
         discovery_multicast: Option<Ipv4Addr>,
+
+        /// Follow live download progress until the job completes.
+        #[arg(short, long)]
+        follow: bool,
     },
 
     /// Send direct daemon control commands.
@@ -128,6 +139,9 @@ enum Command {
 enum DaemonCommand {
     /// Check whether etled is reachable.
     Ping,
+
+    /// Show live daemon configuration and active transfer jobs.
+    Status,
 
     /// List local shares through etled.
     List,
@@ -165,27 +179,21 @@ async fn main() -> anyhow::Result<()> {
         println!("[cli] ipc socket: {}", socket_path.display());
     }
 
-    if matches!(
-        &cli.command,
-        Command::Daemon {
-            command: DaemonCommand::Watch
-        }
-    ) {
-        subscribe_ipc_events(&socket_path, print_event).await?;
-        return Ok(());
-    }
-
-    let command = match cli.command {
-        Command::Version => {
-            build_info::print("etle-cli");
-            return Ok(());
-        }
-        Command::Seed { file, chunk_size } => IpcCommand::SeedFile {
-            input: file,
+    let (command, follow) = match cli.command {
+        Command::Version => unreachable!("version handled before loading config"),
+        Command::Seed {
+            file,
             chunk_size,
-        },
-        Command::List => IpcCommand::ListShares,
-        Command::Delete { share_id } => IpcCommand::DeleteShare { share_id },
+            follow,
+        } => (
+            IpcCommand::SeedFile {
+                input: absolutize_cli_path(file)?,
+                chunk_size,
+            },
+            follow,
+        ),
+        Command::List => (IpcCommand::ListShares, false),
+        Command::Delete { share_id } => (IpcCommand::DeleteShare { share_id }, false),
         Command::Download {
             peer,
             share_id,
@@ -198,7 +206,9 @@ async fn main() -> anyhow::Result<()> {
             discovery_port,
             discovery_timeout_ms,
             discovery_multicast,
+            follow,
         } => {
+            let output = output.map(absolutize_cli_path).transpose()?;
             let parallel = parallel.unwrap_or_else(|| config.parallel());
             let request_window = request_window.unwrap_or_else(|| config.request_window());
             let discovery_port = discovery_port.unwrap_or_else(|| config.discovery_port());
@@ -207,10 +217,15 @@ async fn main() -> anyhow::Result<()> {
             let discovery_multicast =
                 discovery_multicast.unwrap_or_else(|| config.discovery_multicast());
             let auth_psk = auth_psk
-                .or_else(|| std::env::var("ETLE_AUTH_PSK").ok())
-                .or_else(|| config.auth_psk());
+                .filter(|psk| !psk.trim().is_empty())
+                .or_else(|| {
+                    std::env::var("ETLE_AUTH_PSK")
+                        .ok()
+                        .filter(|psk| !psk.trim().is_empty())
+                })
+                .or_else(|| config.auth_psk().filter(|psk| !psk.trim().is_empty()));
 
-            if no_resume {
+            let command = if no_resume {
                 IpcCommand::DownloadFresh {
                     share_id,
                     peers: peer,
@@ -234,20 +249,225 @@ async fn main() -> anyhow::Result<()> {
                     discovery_multicast,
                     auth_psk,
                 }
-            }
+            };
+            (command, follow)
         }
-        Command::Daemon { command } => match command {
-            DaemonCommand::Ping => IpcCommand::Ping,
-            DaemonCommand::List => IpcCommand::ListShares,
-            DaemonCommand::Shutdown => IpcCommand::Shutdown,
-            DaemonCommand::Watch => IpcCommand::SubscribeEvents,
-        },
+        Command::Daemon {
+            command: DaemonCommand::Watch,
+        } => {
+            subscribe_ipc_events(&socket_path, print_event).await?;
+            return Ok(());
+        }
+        Command::Daemon { command } => (
+            match command {
+                DaemonCommand::Ping => IpcCommand::Ping,
+                DaemonCommand::Status => IpcCommand::GetStatus,
+                DaemonCommand::List => IpcCommand::ListShares,
+                DaemonCommand::Shutdown => IpcCommand::Shutdown,
+                DaemonCommand::Watch => unreachable!("watch handled above"),
+            },
+            false,
+        ),
     };
+
+    if follow {
+        let mut subscription = EventSubscription::connect(&socket_path).await?;
+        let response = send_ipc_command(&socket_path, command).await?;
+        let target_job_id = match &response {
+            IpcResponse::SeedQueued { job_id, .. } | IpcResponse::TransferQueued { job_id, .. } => {
+                Some(job_id.clone())
+            }
+            _ => None,
+        };
+        print_response(response)?;
+        if let Some(job_id) = target_job_id {
+            follow_job(&mut subscription, &socket_path, &job_id).await?;
+        }
+        return Ok(());
+    }
 
     let response = send_ipc_command(&socket_path, command).await?;
     print_response(response)?;
 
     Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn absolutize_cli_path(path: PathBuf) -> anyhow::Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    Ok(std::env::current_dir()?.join(path))
+}
+
+#[cfg(feature = "cli")]
+async fn follow_job(
+    subscription: &mut EventSubscription,
+    socket_path: &Path,
+    target_job_id: &str,
+) -> anyhow::Result<()> {
+    let mut last_progress: Option<(usize, usize, u64, u64)> = None;
+    loop {
+        match subscription.next_event().await? {
+            IpcEvent::TaskProgress {
+                job_id: Some(ref id),
+                ref task,
+                completed_chunks,
+                total_chunks,
+                bytes_done,
+                total_bytes,
+                bytes_per_second,
+                ..
+            } if id == target_job_id => {
+                last_progress = Some((completed_chunks, total_chunks, bytes_done, total_bytes));
+                println!(
+                    "[progress] {task}  chunks={completed_chunks}/{total_chunks}  data={}/{}  speed={}",
+                    format_bytes_cli(bytes_done),
+                    format_bytes_cli(total_bytes),
+                    format_rate_cli(bytes_per_second),
+                );
+            }
+            IpcEvent::TransferProgress {
+                job_id: Some(ref id),
+                completed_chunks,
+                total_chunks,
+                bytes_done,
+                total_bytes,
+                bytes_per_second,
+                ..
+            } if id == target_job_id => {
+                let snapshot = (completed_chunks, total_chunks, bytes_done, total_bytes);
+                if last_progress == Some(snapshot) {
+                    continue;
+                }
+                last_progress = Some(snapshot);
+                println!(
+                    "[progress] transferring  chunks={completed_chunks}/{total_chunks}  data={}/{}  speed={}",
+                    format_bytes_cli(bytes_done),
+                    format_bytes_cli(total_bytes),
+                    format_rate_cli(bytes_per_second),
+                );
+            }
+            IpcEvent::JobCompleted {
+                job_id,
+                share_id,
+                summary,
+                ..
+            } if job_id == target_job_id => {
+                if let Some(share_id) = share_id {
+                    println!("[done] {summary} (share_id={share_id})");
+                } else {
+                    println!("[done] {summary}");
+                }
+                return Ok(());
+            }
+            IpcEvent::JobFailed { job_id, error, .. } if job_id == target_job_id => {
+                anyhow::bail!(error);
+            }
+            IpcEvent::Error { message } => {
+                eprintln!("[warn] {message}");
+                if let Ok(IpcResponse::Status(status)) =
+                    send_ipc_command(socket_path, IpcCommand::GetStatus).await
+                    && !status
+                        .active_jobs
+                        .iter()
+                        .any(|job| job.job_id == target_job_id)
+                {
+                    println!("[done] job {target_job_id} is no longer active");
+                    return Ok(());
+                }
+            }
+            IpcEvent::ServerStopped => {
+                anyhow::bail!("daemon stopped before job {target_job_id} finished");
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "cli")]
+fn format_bytes_cli(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = UNITS[0];
+    for candidate in &UNITS[1..] {
+        if value < 1024.0 {
+            break;
+        }
+        value /= 1024.0;
+        unit = candidate;
+    }
+    if unit == "B" {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {unit}")
+    }
+}
+
+#[cfg(feature = "cli")]
+fn format_rate_cli(bytes_per_second: u64) -> String {
+    if bytes_per_second == 0 {
+        "0 B/s".to_string()
+    } else {
+        format!("{}/s", format_bytes_cli(bytes_per_second))
+    }
+}
+
+#[cfg(feature = "cli")]
+fn job_kind_label(kind: IpcJobKind) -> &'static str {
+    match kind {
+        IpcJobKind::Seed => "seed",
+        IpcJobKind::Download => "download",
+        IpcJobKind::Upload => "upload",
+    }
+}
+
+#[cfg(feature = "cli")]
+fn print_status(status: IpcDaemonStatus) {
+    println!("[daemon] status: online");
+    println!("[daemon] peer_id: {}", status.peer_id);
+    match status.listen {
+        Some(addr) => println!("[daemon] listen: {addr}"),
+        None => println!("[daemon] listen: unknown"),
+    }
+    println!("[daemon] library_root: {}", status.library_root.display());
+    println!(
+        "[daemon] discovery: {} (udp port {})",
+        if status.auto_discovery {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        status.discovery_port
+    );
+    println!(
+        "[daemon] p2p_auth: {}",
+        if status.auth_required {
+            "PSK required"
+        } else {
+            "open (no PSK)"
+        }
+    );
+    println!("[daemon] shares: {}", status.share_count);
+    println!("[daemon] active_jobs: {}", status.active_jobs.len());
+    for job in status.active_jobs {
+        print_active_job(&job);
+    }
+}
+
+#[cfg(feature = "cli")]
+fn print_active_job(job: &IpcActiveJob) {
+    println!(
+        "  - [{}] {}  phase={}  chunks={}/{}  data={}/{}  speed={}",
+        job_kind_label(job.kind),
+        job.label,
+        job.phase,
+        job.completed_chunks,
+        job.total_chunks,
+        format_bytes_cli(job.bytes_done),
+        format_bytes_cli(job.total_bytes),
+        format_rate_cli(job.bytes_per_second),
+    );
 }
 
 #[cfg(feature = "cli")]
@@ -272,8 +492,12 @@ fn print_share(share: &IpcShareSummary) {
     };
 
     println!(
-        "[library] {}  {mode}  chunks={}/{}  {secret}  name=\"{}\"",
-        share.share_id, share.completed_chunks, share.total_chunks, share.name
+        "[library] {}  {mode}  size={}  chunks={}/{}  {secret}  name=\"{}\"",
+        share.share_id,
+        format_bytes_cli(share.total_bytes),
+        share.completed_chunks,
+        share.total_chunks,
+        share.name
     );
 }
 
@@ -281,6 +505,7 @@ fn print_share(share: &IpcShareSummary) {
 fn print_response(response: IpcResponse) -> anyhow::Result<()> {
     match response {
         IpcResponse::Pong => println!("[daemon] pong"),
+        IpcResponse::Status(status) => print_status(status),
         IpcResponse::Ack { message } => println!("[daemon] {message}"),
         IpcResponse::Shares { shares } => print_shares(shares),
         IpcResponse::ShareAdded { share } => {
@@ -291,6 +516,10 @@ fn print_response(response: IpcResponse) -> anyhow::Result<()> {
             println!("[daemon] share deleted");
             println!("[daemon] share_id: {share_id}");
             println!("[daemon] name: {name}");
+        }
+        IpcResponse::SeedQueued { job_id, label } => {
+            println!("[daemon] seed queued: {label}");
+            println!("[daemon] job_id: {job_id}");
         }
         IpcResponse::TransferQueued { share_id, job_id } => {
             println!("[daemon] transfer queued: {share_id}");
@@ -327,6 +556,32 @@ fn print_event(event: IpcEvent) {
         }
         IpcEvent::ShareDeleted { share_id } => println!("[event] share deleted: {share_id}"),
         IpcEvent::PeerConnected { peer_id } => println!("[event] peer connected: {peer_id}"),
+        IpcEvent::JobStarted { job } => println!(
+            "[event] job started: [{}] {} ({})",
+            job_kind_label(job.kind),
+            job.label,
+            job.job_id
+        ),
+        IpcEvent::JobCompleted {
+            job_id,
+            kind,
+            label,
+            summary,
+            ..
+        } => println!(
+            "[event] job completed: [{}] {label} ({job_id}) - {summary}",
+            job_kind_label(kind)
+        ),
+        IpcEvent::JobFailed {
+            job_id,
+            kind,
+            label,
+            error,
+            ..
+        } => eprintln!(
+            "[event] job failed: [{}] {label} ({job_id}) - {error}",
+            job_kind_label(kind)
+        ),
         IpcEvent::ChunkCompleted {
             share_id,
             completed_chunks,

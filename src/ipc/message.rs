@@ -10,6 +10,7 @@ use crate::file::descriptor::ShareId;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IpcCommand {
     Ping,
+    GetStatus,
     ListShares,
     SeedFile {
         input: PathBuf,
@@ -57,6 +58,7 @@ pub enum IpcCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IpcResponse {
     Pong,
+    Status(IpcDaemonStatus),
     Ack {
         message: String,
     },
@@ -69,6 +71,10 @@ pub enum IpcResponse {
     ShareDeleted {
         share_id: ShareId,
         name: String,
+    },
+    SeedQueued {
+        job_id: String,
+        label: String,
     },
     TransferQueued {
         share_id: ShareId,
@@ -90,10 +96,45 @@ pub enum IpcResponse {
 pub struct IpcShareSummary {
     pub share_id: ShareId,
     pub name: String,
+    pub total_bytes: u64,
+    pub chunk_size: u64,
     pub completed_chunks: usize,
     pub total_chunks: usize,
     pub has_secret: bool,
     pub mode: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IpcJobKind {
+    Seed,
+    Download,
+    Upload,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IpcActiveJob {
+    pub job_id: String,
+    pub kind: IpcJobKind,
+    pub share_id: Option<ShareId>,
+    pub label: String,
+    pub phase: String,
+    pub completed_chunks: usize,
+    pub total_chunks: usize,
+    pub bytes_done: u64,
+    pub total_bytes: u64,
+    pub bytes_per_second: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IpcDaemonStatus {
+    pub peer_id: String,
+    pub listen: Option<SocketAddr>,
+    pub library_root: PathBuf,
+    pub discovery_port: u16,
+    pub auto_discovery: bool,
+    pub auth_required: bool,
+    pub share_count: usize,
+    pub active_jobs: Vec<IpcActiveJob>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +151,23 @@ pub enum IpcEvent {
     },
     PeerConnected {
         peer_id: String,
+    },
+    JobStarted {
+        job: IpcActiveJob,
+    },
+    JobCompleted {
+        job_id: String,
+        kind: IpcJobKind,
+        share_id: Option<ShareId>,
+        label: String,
+        summary: String,
+    },
+    JobFailed {
+        job_id: String,
+        kind: IpcJobKind,
+        share_id: Option<ShareId>,
+        label: String,
+        error: String,
     },
     ChunkCompleted {
         share_id: ShareId,

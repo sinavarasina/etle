@@ -8,6 +8,13 @@ pub(super) use std::{
 pub(super) use get_if_addrs::{IfAddr, get_if_addrs};
 pub(super) use tokio::{net::UdpSocket, time};
 
-pub(super) use crate::{file::descriptor::ShareId, state::library};
+pub(super) use crate::{
+    file::{descriptor::ShareId, error::FileError},
+    state::{
+        model::ShareMode,
+        paths::{LibraryPaths, LocalShareSummary},
+        storage::{read_descriptor, read_progress, read_state},
+    },
+};
 
 pub(super) use super::constants::*;

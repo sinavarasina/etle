@@ -20,29 +20,50 @@ pub fn read_file_chunks(
 
     let mut file = File::open(path)?;
     let mut chunks = Vec::new();
-    let mut index = 0_u32;
+    let mut next_index = Some(0_u32);
 
     loop {
         let mut buffer = vec![0_u8; chunk_size];
-        let read = file.read(&mut buffer)?;
+        let read = read_full_or_eof(&mut file, &mut buffer)?;
 
         if read == 0 {
             break;
         }
+
+        let index = next_index.ok_or(FileError::TooManyChunks)?;
+        next_index = index.checked_add(1);
 
         buffer.truncate(read);
         chunks.push(PlainChunk {
             index,
             data: buffer,
         });
-        index = index.checked_add(1).ok_or(FileError::TooManyChunks)?;
     }
 
     Ok(chunks)
 }
 
+pub(crate) fn read_full_or_eof(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+) -> std::io::Result<usize> {
+    let mut total = 0;
+    while total < buffer.len() {
+        match reader.read(&mut buffer[total..]) {
+            Ok(0) => break,
+            Ok(read) => total += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(total)
+}
+
 pub fn join_chunks(chunks: &[PlainChunk]) -> Vec<u8> {
-    let total_len = chunks.iter().map(|chunk| chunk.data.len()).sum();
+    let total_len = chunks
+        .iter()
+        .try_fold(0_usize, |acc, chunk| acc.checked_add(chunk.data.len()))
+        .expect("joined chunk size overflows usize");
     let mut output = Vec::with_capacity(total_len);
 
     let mut sorted = chunks.to_vec();
@@ -87,5 +108,40 @@ mod tests {
         assert!(read_file_chunks(&path, 0).is_err());
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_full_or_eof_reassembles_short_reads() {
+        struct ShortReader {
+            data: Vec<u8>,
+            pos: usize,
+        }
+
+        impl Read for ShortReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos == self.data.len() {
+                    return Ok(0);
+                }
+                if self.pos == 1 {
+                    self.pos += 1;
+                    buf[0] = self.data[1];
+                    return Ok(1);
+                }
+                let take = (self.data.len() - self.pos).min(2).min(buf.len());
+                buf[..take].copy_from_slice(&self.data[self.pos..self.pos + take]);
+                self.pos += take;
+                Ok(take)
+            }
+        }
+
+        let mut reader = ShortReader {
+            data: b"abcdef".to_vec(),
+            pos: 0,
+        };
+        let mut buf = [0_u8; 4];
+        assert_eq!(read_full_or_eof(&mut reader, &mut buf).unwrap(), 4);
+        assert_eq!(&buf, b"abcd");
+        assert_eq!(read_full_or_eof(&mut reader, &mut buf).unwrap(), 2);
+        assert_eq!(&buf[..2], b"ef");
     }
 }

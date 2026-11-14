@@ -83,7 +83,16 @@ pub async fn share_forever(
     let library_root = library_root.as_ref().to_path_buf();
 
     loop {
-        let (stream, peer_addr) = accept_peer(&listener).await?;
+        let (stream, peer_addr) = match accept_peer(&listener).await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                if options.log_level.is_normal() {
+                    println!("[seeder] transient accept error: {error}");
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
         let peer_library_root = library_root.clone();
         let peer_options = options.clone();
         let log_level = options.log_level;
@@ -129,7 +138,16 @@ pub async fn library_forever(
     let library_root = library_root.as_ref().to_path_buf();
 
     loop {
-        let (stream, peer_addr) = accept_peer(&listener).await?;
+        let (stream, peer_addr) = match accept_peer(&listener).await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                if options.log_level.is_normal() {
+                    println!("[seeder] transient accept error: {error}");
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
         let peer_library_root = library_root.clone();
         let peer_options = options.clone();
         let log_level = options.log_level;
@@ -175,7 +193,11 @@ async fn library_connected_peer(
         println!("[seeder] peer connected: {peer_addr}");
     }
 
-    let remote_peer_id = server_protocol_handshake(&mut stream, seeder_id).await?;
+    let remote_peer_id =
+        server_transfer_handshake(&mut stream, seeder_id, auth_psk.is_some()).await?;
+    events::publish(IpcEvent::PeerConnected {
+        peer_id: format!("{remote_peer_id} ({peer_addr})"),
+    });
     if log_level.is_normal() {
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
@@ -253,12 +275,24 @@ async fn library_connected_peer(
     }
 
     let mut served_or_known = BTreeSet::new();
+    let mut chunks_served = 0_usize;
+    let total_encrypted_bytes: u64 = descriptor
+        .chunks
+        .iter()
+        .fold(0_u64, |acc, chunk| acc.saturating_add(chunk.encrypted_size));
+    let mut upload_session: Option<UploadSessionGuard> = None;
+
     while served_or_known.len() < total_chunks {
         let message = match receive(&mut stream).await {
             Ok(message) => message,
             Err(error) if super::download::is_peer_closed_protocol_error(&error) => {
                 if log_level.is_normal() {
                     println!("[seeder] peer disconnected before requesting all chunks");
+                }
+                if let Some(session) = upload_session.take() {
+                    session.complete(format!(
+                        "peer disconnected after serving {chunks_served} chunk(s)"
+                    ));
                 }
                 return Ok(descriptor);
             }
@@ -290,6 +324,19 @@ async fn library_connected_peer(
                     .iter()
                     .find(|chunk| chunk.index == index)
                     .ok_or(NetworkError::MissingEncryptedChunk(index))?;
+
+                let session = upload_session.get_or_insert_with(|| {
+                    UploadSessionGuard::start(
+                        share_id,
+                        &descriptor.name,
+                        &remote_peer_id,
+                        total_chunks,
+                        &served_or_known,
+                        &descriptor.chunks,
+                        total_encrypted_bytes,
+                    )
+                });
+
                 send_chunk_file(
                     &mut stream,
                     index,
@@ -299,8 +346,11 @@ async fn library_connected_peer(
                 .await?;
 
                 served_or_known.insert(index);
-                super::progress::with_context(
+                chunks_served += 1;
+                super::progress::with_context_label_for_job(
+                    session.job_id.clone(),
                     Some(share_id),
+                    Some(session.job_id.clone()),
                     "seeder",
                     "served-from-library",
                     log_level,
@@ -319,7 +369,94 @@ async fn library_connected_peer(
         }
     }
 
+    if let Some(session) = upload_session.take() {
+        session.complete(format!(
+            "uploaded {chunks_served} chunk(s) to {remote_peer_id}"
+        ));
+    }
+
     Ok(descriptor)
+}
+
+struct UploadSessionGuard {
+    job_id: String,
+    total_chunks: usize,
+    finished: bool,
+}
+
+impl UploadSessionGuard {
+    fn start(
+        share_id: ShareId,
+        share_name: &str,
+        remote_peer_id: &str,
+        total_chunks: usize,
+        known_chunks: &BTreeSet<u32>,
+        chunks: &[ChunkMeta],
+        total_bytes: u64,
+    ) -> Self {
+        static NEXT_UPLOAD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let seq = NEXT_UPLOAD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let job_id = format!("upload-{seq}");
+        let baseline_bytes: u64 = chunks
+            .iter()
+            .filter(|meta| known_chunks.contains(&meta.index))
+            .map(|meta| meta.encrypted_size)
+            .sum();
+
+        super::progress::init_context_session(
+            &job_id,
+            "seeder",
+            "served-from-library",
+            total_chunks,
+            known_chunks.len(),
+            baseline_bytes,
+            Some(total_bytes),
+            Some(job_id.clone()),
+        );
+        super::jobs::start_job(IpcActiveJob {
+            job_id: job_id.clone(),
+            kind: IpcJobKind::Upload,
+            share_id: Some(share_id),
+            label: format!("{share_name} -> {remote_peer_id}"),
+            phase: "seeder:served-from-library".to_string(),
+            completed_chunks: known_chunks.len(),
+            total_chunks,
+            bytes_done: baseline_bytes,
+            total_bytes,
+            bytes_per_second: 0,
+        });
+
+        Self {
+            job_id,
+            total_chunks,
+            finished: false,
+        }
+    }
+
+    fn complete(mut self, summary: String) {
+        self.finished = true;
+        super::progress::clear_context_session(
+            &self.job_id,
+            "seeder",
+            "served-from-library",
+            self.total_chunks,
+        );
+        super::jobs::complete_job(&self.job_id, summary);
+    }
+}
+
+impl Drop for UploadSessionGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            super::progress::clear_context_session(
+                &self.job_id,
+                "seeder",
+                "served-from-library",
+                self.total_chunks,
+            );
+            super::jobs::fail_job(&self.job_id, "upload interrupted by peer error");
+        }
+    }
 }
 
 async fn share_once_from_listener(
@@ -368,7 +505,11 @@ async fn share_connected_peer(
         );
     }
 
-    let remote_peer_id = server_protocol_handshake(&mut stream, seeder_id).await?;
+    let remote_peer_id =
+        server_transfer_handshake(&mut stream, seeder_id, auth_psk.is_some()).await?;
+    events::publish(IpcEvent::PeerConnected {
+        peer_id: format!("{remote_peer_id} ({peer_addr})"),
+    });
     if log_level.is_normal() {
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
@@ -420,6 +561,32 @@ async fn share_connected_peer(
         );
     }
 
+    static NEXT_SHARE_SESSION_SEQ: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+    let session_context = format!(
+        "{share_id}:state:{}",
+        NEXT_SHARE_SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let _progress_guard = super::progress::ProgressSessionGuard::new(
+        session_context.clone(),
+        "seeder",
+        "served-from-state",
+        total_chunks,
+    );
+
+    static NEXT_LIBRARY_SESSION_SEQ: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+    let session_context = format!(
+        "{share_id}:library:{}",
+        NEXT_LIBRARY_SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let _progress_guard = super::progress::ProgressSessionGuard::new(
+        session_context.clone(),
+        "seeder",
+        "served-from-library",
+        total_chunks,
+    );
+
     let mut served_or_known = BTreeSet::new();
     while served_or_known.len() < total_chunks {
         let message = match receive(&mut stream).await {
@@ -467,8 +634,10 @@ async fn share_connected_peer(
                 .await?;
 
                 served_or_known.insert(index);
-                super::progress::with_context(
+                super::progress::with_context_label_for_job(
+                    session_context.clone(),
                     Some(share_id),
+                    None,
                     "seeder",
                     "served-from-state",
                     log_level,
@@ -508,7 +677,11 @@ pub async fn library_once_from_listener(
         println!("[seeder] peer connected: {peer_addr}");
     }
 
-    let remote_peer_id = server_protocol_handshake(&mut stream, seeder_id).await?;
+    let remote_peer_id =
+        server_transfer_handshake(&mut stream, seeder_id, auth_psk.is_some()).await?;
+    events::publish(IpcEvent::PeerConnected {
+        peer_id: format!("{remote_peer_id} ({peer_addr})"),
+    });
     if log_level.is_normal() {
         println!("[seeder] hello handshake completed with {remote_peer_id}");
     }
@@ -584,6 +757,19 @@ pub async fn library_once_from_listener(
             total_chunks
         );
     }
+
+    static NEXT_LIBRARY_SESSION_SEQ: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+    let session_context = format!(
+        "{share_id}:library:{}",
+        NEXT_LIBRARY_SESSION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let _progress_guard = super::progress::ProgressSessionGuard::new(
+        session_context.clone(),
+        "seeder",
+        "served-from-library",
+        total_chunks,
+    );
 
     let mut served_or_known = BTreeSet::new();
     while served_or_known.len() < total_chunks {
@@ -640,8 +826,10 @@ pub async fn library_once_from_listener(
                 .await?;
 
                 served_or_known.insert(index);
-                super::progress::with_context(
+                super::progress::with_context_label_for_job(
+                    session_context.clone(),
                     Some(share_id),
+                    None,
                     "seeder",
                     "served-from-library",
                     log_level,

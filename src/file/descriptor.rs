@@ -2,7 +2,10 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{crypto::hash::FileId, file::manifest::ChunkMeta};
+use crate::{
+    crypto::hash::FileId,
+    file::manifest::{ChunkMeta, MAX_METADATA_DECODE_BYTES},
+};
 
 pub const ETLE_DESCRIPTOR_VERSION: u16 = 1;
 
@@ -135,8 +138,14 @@ impl EtleDescriptor {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, bincode_next::error::DecodeError> {
-        let (descriptor, bytes_read): (Self, usize) =
-            bincode_next::serde::decode_from_slice(bytes, bincode_next::config::standard())?;
+        if bytes.len() > MAX_METADATA_DECODE_BYTES {
+            return Err(bincode_next::error::DecodeError::LimitExceeded);
+        }
+
+        let (descriptor, bytes_read): (Self, usize) = bincode_next::serde::decode_from_slice(
+            bytes,
+            bincode_next::config::standard().with_limit::<MAX_METADATA_DECODE_BYTES>(),
+        )?;
 
         if bytes_read != bytes.len() {
             return Err(bincode_next::error::DecodeError::OtherString(format!(

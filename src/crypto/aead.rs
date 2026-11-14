@@ -2,7 +2,6 @@ use chacha20poly1305::{
     Key, XChaCha20Poly1305, XNonce,
     aead::{Aead, KeyInit, Payload},
 };
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -37,7 +36,7 @@ impl Nonce {
 #[must_use]
 pub fn generate_nonce() -> Nonce {
     let mut nonce = [0_u8; 24];
-    OsRng.fill_bytes(&mut nonce);
+    getrandom::fill(&mut nonce).expect("system random number generator failed");
     Nonce(nonce)
 }
 
@@ -56,12 +55,12 @@ pub fn encrypt_chunk(
     plaintext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
-    let nonce = XNonce::from_slice(nonce.as_bytes());
+    let cipher = XChaCha20Poly1305::new(&Key::from(*key.as_bytes()));
+    let nonce = XNonce::from(*nonce.as_bytes());
 
     cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: plaintext,
                 aad,
@@ -76,12 +75,12 @@ pub fn decrypt_chunk(
     ciphertext: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    let cipher = XChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
-    let nonce = XNonce::from_slice(nonce.as_bytes());
+    let cipher = XChaCha20Poly1305::new(&Key::from(*key.as_bytes()));
+    let nonce = XNonce::from(*nonce.as_bytes());
 
     cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ciphertext,
                 aad,

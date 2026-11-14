@@ -114,7 +114,7 @@ impl LocalShareSummary {
 /// 4. Fallback: `./Downloads/ETLE`
 #[must_use]
 pub fn default_library_root() -> PathBuf {
-    if let Some(root) = env::var_os(ETLE_LIBRARY_ROOT_ENV) {
+    if let Some(root) = env::var_os(ETLE_LIBRARY_ROOT_ENV).filter(|value| !value.is_empty()) {
         return PathBuf::from(root);
     }
 
@@ -134,16 +134,19 @@ pub fn default_library_root_from_home(home: impl AsRef<Path>) -> PathBuf {
 pub fn home_dir_from_env() -> Option<PathBuf> {
     if cfg!(windows) {
         env::var_os("USERPROFILE")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .or_else(windows_home_from_drive_and_path)
     } else {
-        env::var_os("HOME").map(PathBuf::from)
+        env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
     }
 }
 
 fn windows_home_from_drive_and_path() -> Option<PathBuf> {
-    let drive = env::var_os("HOMEDRIVE")?;
-    let path = env::var_os("HOMEPATH")?;
+    let drive = env::var_os("HOMEDRIVE").filter(|value| !value.is_empty())?;
+    let path = env::var_os("HOMEPATH").filter(|value| !value.is_empty())?;
     Some(PathBuf::from(format!(
         "{}{}",
         drive.to_string_lossy(),

@@ -41,7 +41,7 @@ pub async fn from_peers(
         let attempt_number = attempt + 1;
         let mut attempt_options = options.clone();
 
-        if total_peers > 1 || attempt > 0 {
+        if attempt > 0 {
             attempt_options = attempt_options.with_resume(true);
         }
 
@@ -49,7 +49,7 @@ pub async fn from_peers(
             println!("[peer] trying peer {attempt_number}/{total_peers}: {peer_addr}");
         }
 
-        match from_peer_with(peer_addr, output_path, attempt_options).await {
+        match Box::pin(from_peer_with(peer_addr, output_path, attempt_options)).await {
             Ok(manifest) => return Ok(manifest),
             Err(error) => {
                 if options.log_level.is_normal() {
@@ -78,7 +78,7 @@ pub async fn from_peers_parallel(
     }
 
     if parallelism <= 1 || peer_addrs.len() == 1 {
-        return from_peers(peer_addrs, output_path, options.with_resume(true)).await;
+        return Box::pin(from_peers(peer_addrs, output_path, options)).await;
     }
 
     let output_path = output_path.as_ref();
@@ -95,8 +95,13 @@ pub async fn from_peers_parallel(
     let mut reference_manifest = None;
     let mut reference_file_key = None;
     let mut last_error = None;
+    let mut attempts_made = 0_usize;
+    let mut last_attempted_idx = None;
 
-    for peer_addr in peer_addrs.iter().copied().take(worker_limit) {
+    for (idx, peer_addr) in peer_addrs.iter().copied().enumerate() {
+        attempts_made += 1;
+        last_attempted_idx = Some(idx);
+
         match connect_download_peer(
             peer_addr,
             options.peer_id.clone(),
@@ -129,6 +134,9 @@ pub async fn from_peers_parallel(
                 }
 
                 connected_peers.push(peer);
+                if connected_peers.len() >= worker_limit {
+                    break;
+                }
             }
             Err(error) => {
                 if options.log_level.is_normal() {
@@ -141,35 +149,40 @@ pub async fn from_peers_parallel(
 
     let Some(manifest) = reference_manifest else {
         return Err(NetworkError::AllPeersFailed {
-            attempts: worker_limit,
+            attempts: attempts_made,
             last_error: last_error.unwrap_or_else(|| "no compatible peer prepared".to_string()),
         });
     };
 
     let Some(file_key) = reference_file_key else {
         return Err(NetworkError::AllPeersFailed {
-            attempts: worker_limit,
+            attempts: attempts_made,
             last_error: last_error.unwrap_or_else(|| "file key was not received".to_string()),
         });
     };
 
     if connected_peers.is_empty() {
         return Err(NetworkError::AllPeersFailed {
-            attempts: worker_limit,
+            attempts: attempts_made,
             last_error: last_error.unwrap_or_else(|| "no compatible peer prepared".to_string()),
         });
     }
 
     if connected_peers.len() == 1 {
-        let peer_addr = connected_peers[0].peer_addr;
+        let mut fallback_peers = vec![connected_peers[0].peer_addr];
+        if let Some(last_idx) = last_attempted_idx {
+            fallback_peers.extend(peer_addrs.iter().skip(last_idx + 1).copied());
+        }
         if options.log_level.is_normal() {
             println!(
-                "[peer] only one compatible peer prepared; using sequential windowed download from {peer_addr}"
+                "[peer] only one compatible peer prepared ({}); using sequential windowed fallback across {} candidate(s)",
+                fallback_peers[0],
+                fallback_peers.len()
             );
         }
 
         drop(connected_peers);
-        return from_peers([peer_addr], output_path, options.with_resume(true)).await;
+        return Box::pin(from_peers(fallback_peers, output_path, options)).await;
     }
 
     let descriptor = descriptor_from_manifest(&manifest);
@@ -179,7 +192,7 @@ pub async fn from_peers_parallel(
         &descriptor,
         file_key,
         output_state_dir.clone(),
-        true,
+        options.resume,
         options.log_level,
     )?;
 
@@ -222,10 +235,25 @@ pub async fn from_peers_parallel(
     }
 
     let total_chunks = manifest.chunks.len();
+    let share_id = descriptor.share_id;
+    sync_download_job_start(
+        share_id,
+        &manifest,
+        true,
+        &completed_chunks,
+        "parallel received+verified",
+        options.log_level,
+    );
+    let progress_guard = super::progress::ProgressSessionGuard::new(
+        share_id.to_string(),
+        "peer",
+        "parallel received+verified",
+        total_chunks,
+    );
+
     let queue = Arc::new(Mutex::new(missing_chunks));
     let completed_chunks = Arc::new(Mutex::new(completed_chunks));
     let state = Arc::new(Mutex::new(library_state));
-    let share_id = descriptor.share_id;
     let manifest = Arc::new(manifest);
 
     let mut handles = Vec::with_capacity(connected_peers.len());
@@ -260,6 +288,7 @@ pub async fn from_peers_parallel(
             Err(error) => worker_errors.push(error.to_string()),
         }
     }
+    drop(progress_guard);
 
     let completed_chunks = match Arc::try_unwrap(completed_chunks) {
         Ok(completed_chunks) => completed_chunks
@@ -270,6 +299,19 @@ pub async fn from_peers_parallel(
             .expect("parallel chunk mutex poisoned")
             .clone(),
     };
+
+    {
+        let mut state_guard = state.lock().expect("parallel state mutex poisoned");
+        if let Some(active_state) = state_guard.as_mut()
+            && active_state.dirty_chunks > 0
+        {
+            flush_download_progress(
+                active_state,
+                ShareMode::Downloading,
+                output_state_dir.clone(),
+            )?;
+        }
+    }
 
     if completed_chunks.len() != total_chunks {
         if let Some(meta) = manifest
@@ -290,7 +332,12 @@ pub async fn from_peers_parallel(
                 );
             }
 
-            return from_peers(peer_addrs, output_path, options.with_resume(true)).await;
+            let fallback_options = if !completed_chunks.is_empty() {
+                options.with_resume(true)
+            } else {
+                options
+            };
+            return Box::pin(from_peers(peer_addrs, output_path, fallback_options)).await;
         }
     }
 
@@ -340,7 +387,8 @@ pub async fn from_peer_with(
         println!("[peer] connected to {peer_addr}");
     }
 
-    let remote_peer_id = client_protocol_handshake(&mut stream, peer_id).await?;
+    let remote_peer_id =
+        client_transfer_handshake(&mut stream, peer_id, auth_psk.is_some()).await?;
     if log_level.is_normal() {
         println!("[peer] hello handshake completed with {remote_peer_id}");
     }
@@ -376,6 +424,17 @@ pub async fn from_peer_with(
         println!("[peer] output path: {}", output_path.display());
     }
 
+    let descriptor = descriptor_from_manifest(&manifest);
+    if let Some(expected_share_id) = requested_share_id
+        && descriptor.share_id != expected_share_id
+    {
+        return Err(FileError::ShareIdMismatch {
+            expected: expected_share_id,
+            actual: descriptor.share_id,
+        }
+        .into());
+    }
+
     let wrapped_file_key = match receive(&mut stream).await? {
         WireMessage::WrappedFileKey { nonce, data } => WrappedFileKey { nonce, data },
         actual => {
@@ -400,7 +459,6 @@ pub async fn from_peer_with(
         );
     }
 
-    let descriptor = descriptor_from_manifest(&manifest);
     let output_state_dir = output_parent_dir(output_path);
     let mut library_state = initialize_download_library_state(
         library_root.as_deref(),
@@ -441,7 +499,22 @@ pub async fn from_peer_with(
         .await?;
     }
 
-    download_missing_chunks_windowed(
+    sync_download_job_start(
+        descriptor.share_id,
+        &manifest,
+        streaming_to_library,
+        &completed_chunks,
+        "received+verified",
+        log_level,
+    );
+    let progress_guard = super::progress::ProgressSessionGuard::new(
+        descriptor.share_id.to_string(),
+        "peer",
+        "received+verified",
+        total_chunks,
+    );
+
+    if let Err(error) = download_missing_chunks_windowed(
         &mut stream,
         &manifest,
         &peer_available,
@@ -454,9 +527,32 @@ pub async fn from_peer_with(
         request_window,
         descriptor.share_id,
     )
-    .await?;
+    .await
+    {
+        if let Some(active_state) = library_state.as_mut()
+            && active_state.dirty_chunks > 0
+        {
+            let _ = flush_download_progress(
+                active_state,
+                ShareMode::Downloading,
+                output_state_dir.clone(),
+            );
+        }
+        return Err(error);
+    }
+
+    drop(progress_guard);
 
     if completed_chunks.len() != total_chunks {
+        if let Some(active_state) = library_state.as_mut()
+            && active_state.dirty_chunks > 0
+        {
+            let _ = flush_download_progress(
+                active_state,
+                ShareMode::Downloading,
+                output_state_dir.clone(),
+            );
+        }
         if let Some(meta) = manifest
             .chunks
             .iter()
@@ -471,6 +567,15 @@ pub async fn from_peer_with(
     }
 
     if streaming_to_library {
+        if let Some(active_state) = library_state.as_mut()
+            && active_state.dirty_chunks > 0
+        {
+            flush_download_progress(
+                active_state,
+                ShareMode::Downloading,
+                output_state_dir.clone(),
+            )?;
+        }
         let active_state = active_download_state(&library_state)?;
         decrypt_library_chunks_to_file(
             &active_state.paths,
@@ -536,7 +641,8 @@ async fn connect_download_peer(
         println!("[peer] connected to {peer_addr}");
     }
 
-    let remote_peer_id = client_protocol_handshake(&mut stream, peer_id).await?;
+    let remote_peer_id =
+        client_transfer_handshake(&mut stream, peer_id, auth_psk.is_some()).await?;
     if log_level.is_normal() {
         println!("[peer] hello handshake completed with {remote_peer_id}");
     }
@@ -565,6 +671,17 @@ async fn connect_download_peer(
             manifest.file_size,
             manifest.chunks.len()
         );
+    }
+
+    let descriptor = descriptor_from_manifest(&manifest);
+    if let Some(expected_share_id) = requested_share_id
+        && descriptor.share_id != expected_share_id
+    {
+        return Err(FileError::ShareIdMismatch {
+            expected: expected_share_id,
+            actual: descriptor.share_id,
+        }
+        .into());
     }
 
     let wrapped_file_key = match receive(&mut stream).await? {
@@ -690,6 +807,26 @@ async fn parallel_download_worker(
     Ok(())
 }
 
+struct TempFileCleanup(Option<PathBuf>);
+
+impl TempFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self(Some(path))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            remove_file_if_exists(&path);
+        }
+    }
+}
+
 async fn request_chunk_from_peer_to_library(
     stream: &mut TcpStream,
     meta: &ChunkMeta,
@@ -702,11 +839,11 @@ async fn request_chunk_from_peer_to_library(
         let state = state.expect_lock("parallel state mutex poisoned");
         download_chunk_temp_path(&state, meta.index)?
     };
+    let mut temp_cleanup = TempFileCleanup::new(temp_path.clone());
 
     match receive_chunk_to_file(stream, &temp_path).await? {
         ReceivedChunkFrame::RawChunkFile(chunk) => {
             if chunk.index != meta.index {
-                remove_file_if_exists(&temp_path);
                 return Err(NetworkError::UnexpectedChunkIndex {
                     expected: meta.index,
                     actual: chunk.index,
@@ -714,16 +851,15 @@ async fn request_chunk_from_peer_to_library(
             }
 
             if chunk.blake3_hash != *meta.blake3_hash.as_bytes() {
-                remove_file_if_exists(&temp_path);
                 return Err(FileError::ChunkHashMismatch(meta.index).into());
             }
 
             let mut state = state.expect_lock("parallel state mutex poisoned");
             persist_downloaded_chunk_file(&mut state, meta.index, &temp_path, output_dir)?;
+            temp_cleanup.disarm();
             Ok(chunk.data_len)
         }
         ReceivedChunkFrame::Message(WireMessage::Chunk { index, data }) => {
-            remove_file_if_exists(&temp_path);
             if index != meta.index {
                 return Err(NetworkError::UnexpectedChunkIndex {
                     expected: meta.index,
@@ -743,16 +879,12 @@ async fn request_chunk_from_peer_to_library(
             Ok(chunk_len)
         }
         ReceivedChunkFrame::Message(WireMessage::Error { message }) => {
-            remove_file_if_exists(&temp_path);
             Err(NetworkError::PeerError(message))
         }
-        ReceivedChunkFrame::Message(actual) => {
-            remove_file_if_exists(&temp_path);
-            Err(NetworkError::UnexpectedMessage {
-                expected: "Chunk",
-                actual,
-            })
-        }
+        ReceivedChunkFrame::Message(actual) => Err(NetworkError::UnexpectedMessage {
+            expected: "Chunk",
+            actual,
+        }),
     }
 }
 
@@ -784,21 +916,6 @@ async fn download_missing_chunks_windowed(
         );
     }
 
-    for meta in &manifest.chunks {
-        if completed_chunks.contains(&meta.index) {
-            super::progress::for_share(
-                share_id,
-                "peer",
-                "reused",
-                log_level,
-                completed_chunks.len(),
-                total_chunks,
-                meta.index,
-                meta.encrypted_size as usize,
-            );
-        }
-    }
-
     loop {
         while in_flight.len() < active_request_window && next_meta < manifest.chunks.len() {
             let meta = &manifest.chunks[next_meta];
@@ -826,11 +943,12 @@ async fn download_missing_chunks_windowed(
             break;
         }
 
+        let mut temp_cleanup = None;
         let received = if streaming_to_library {
             let temp_path = download_chunk_temp_path(library_state, 0)?;
-            receive_chunk_to_file(stream, &temp_path)
-                .await
-                .map(|frame| (frame, Some(temp_path)))?
+            temp_cleanup = Some(TempFileCleanup::new(temp_path.clone()));
+            let frame = receive_chunk_to_file(stream, &temp_path).await?;
+            (frame, Some(temp_path))
         } else {
             (ReceivedChunkFrame::Message(receive(stream).await?), None)
         };
@@ -847,7 +965,6 @@ async fn download_missing_chunks_windowed(
                     })?;
 
                 if chunk.blake3_hash != *meta.blake3_hash.as_bytes() {
-                    remove_file_if_exists(&temp_path);
                     return Err(FileError::ChunkHashMismatch(meta.index).into());
                 }
 
@@ -858,6 +975,9 @@ async fn download_missing_chunks_windowed(
                     &temp_path,
                     output_state_dir.clone(),
                 )?;
+                if let Some(mut guard) = temp_cleanup {
+                    guard.disarm();
+                }
 
                 completed_chunks.insert(index);
 
@@ -977,7 +1097,9 @@ fn maybe_grow_request_window(
     }
 
     *chunks_since_window_growth = 0;
-    *active_request_window = (*active_request_window * 2).min(max_request_window);
+    *active_request_window = (*active_request_window)
+        .saturating_mul(2)
+        .min(max_request_window);
 
     if log_level.is_verbose() {
         println!("[peer] adaptive request window increased to {active_request_window}");
@@ -1119,14 +1241,26 @@ fn initialize_download_library_state(
 
     let paths = LibraryPaths::for_share(root, descriptor.share_id);
     let progress = if resume && paths.progress_path().is_file() {
-        if paths.descriptor_path().is_file() {
-            let existing = read_descriptor(&paths)?;
-            if existing != *descriptor && log_level.is_verbose() {
-                println!("[peer] existing descriptor differs; resetting resume state");
+        let descriptor_matches = if paths.descriptor_path().is_file() {
+            match read_descriptor(&paths) {
+                Ok(existing) => {
+                    let matches = existing == *descriptor;
+                    if !matches && log_level.is_verbose() {
+                        println!("[peer] existing descriptor differs; resetting resume state");
+                    }
+                    matches
+                }
+                Err(_) => false,
             }
-        }
+        } else {
+            true
+        };
 
-        read_progress(&paths).unwrap_or_else(|_| DownloadProgress::empty(descriptor.share_id))
+        if descriptor_matches {
+            read_progress(&paths).unwrap_or_else(|_| DownloadProgress::empty(descriptor.share_id))
+        } else {
+            DownloadProgress::empty(descriptor.share_id)
+        }
     } else {
         DownloadProgress::empty(descriptor.share_id)
     };
@@ -1194,7 +1328,20 @@ fn load_resumable_chunks(
             continue;
         }
 
-        let chunk = read_chunk(&state.paths, meta.index, meta.encrypted_size)?;
+        let chunk = match read_chunk(&state.paths, meta.index, meta.encrypted_size) {
+            Ok(chunk) => chunk,
+            Err(FileError::Io(error)) if error.kind() == ErrorKind::NotFound => continue,
+            Err(FileError::ChunkSizeMismatch { .. }) => {
+                if log_level.is_verbose() {
+                    println!(
+                        "[peer] ignored size-mismatched resumable chunk {}",
+                        meta.index
+                    );
+                }
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let actual_hash = hash_chunk(&chunk.data);
         if actual_hash != meta.blake3_hash {
             if log_level.is_verbose() {
@@ -1243,7 +1390,20 @@ fn load_resumable_chunk_indexes(
             continue;
         }
 
-        let chunk = read_chunk(&state.paths, meta.index, meta.encrypted_size)?;
+        let chunk = match read_chunk(&state.paths, meta.index, meta.encrypted_size) {
+            Ok(chunk) => chunk,
+            Err(FileError::Io(error)) if error.kind() == ErrorKind::NotFound => continue,
+            Err(FileError::ChunkSizeMismatch { .. }) => {
+                if log_level.is_verbose() {
+                    println!(
+                        "[peer] ignored size-mismatched resumable chunk {}",
+                        meta.index
+                    );
+                }
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let actual_hash = hash_chunk(&chunk.data);
         if actual_hash != meta.blake3_hash {
             if log_level.is_verbose() {
@@ -1289,26 +1449,103 @@ fn decrypt_library_chunks_to_file(
     output_path: &Path,
     log_level: TransferLogLevel,
 ) -> Result<(), NetworkError> {
-    let worker_count = default_decrypt_worker_count(manifest.chunks.len());
+    let total_chunks = manifest.chunks.len();
+    let job_id = super::jobs::active_job_id(paths.share_id);
+    super::progress::init_share_session(
+        paths.share_id,
+        "peer",
+        "decrypted+written",
+        total_chunks,
+        0,
+        0,
+        Some(manifest.file_size),
+        job_id,
+    );
+    let _progress_guard = super::progress::ProgressSessionGuard::new(
+        paths.share_id.to_string(),
+        "peer",
+        "decrypted+written",
+        total_chunks,
+    );
 
+    let worker_count = default_decrypt_worker_count(total_chunks);
     if worker_count <= 1 {
-        return decrypt_library_chunks_to_file_sequential(
+        decrypt_library_chunks_to_file_sequential(paths, manifest, file_key, output_path, log_level)
+    } else {
+        decrypt_library_chunks_to_file_parallel(
             paths,
             manifest,
             file_key,
             output_path,
+            worker_count,
             log_level,
+        )
+    }
+}
+
+fn sync_download_job_start(
+    share_id: ShareId,
+    manifest: &Manifest,
+    streaming_to_library: bool,
+    completed_chunks: &BTreeSet<u32>,
+    action: &str,
+    log_level: TransferLogLevel,
+) {
+    let total_chunks = manifest.chunks.len();
+    let total_encrypted: u64 = manifest
+        .chunks
+        .iter()
+        .fold(0_u64, |acc, meta| acc.saturating_add(meta.encrypted_size));
+    let reused_bytes: u64 = manifest
+        .chunks
+        .iter()
+        .filter(|meta| completed_chunks.contains(&meta.index))
+        .fold(0_u64, |acc, meta| acc.saturating_add(meta.encrypted_size));
+    let job_id = super::jobs::active_job_id(share_id);
+
+    if let Some(job_id) = &job_id {
+        super::jobs::update_job_metadata(
+            job_id,
+            Some(share_id),
+            Some(manifest.file_name.clone()),
+            Some(total_chunks),
+            Some(total_encrypted),
         );
     }
 
-    decrypt_library_chunks_to_file_parallel(
-        paths,
-        manifest,
-        file_key,
-        output_path,
-        worker_count,
+    if streaming_to_library {
+        events::publish(IpcEvent::ShareUpdated {
+            share: IpcShareSummary {
+                share_id,
+                name: manifest.file_name.clone(),
+                total_bytes: manifest.file_size,
+                chunk_size: manifest.chunk_size,
+                completed_chunks: completed_chunks.len(),
+                total_chunks,
+                has_secret: true,
+                mode: Some("downloading".to_string()),
+            },
+        });
+    }
+
+    super::progress::init_share_session(
+        share_id,
+        "peer",
+        action,
+        total_chunks,
+        completed_chunks.len(),
+        reused_bytes,
+        Some(total_encrypted),
+        job_id,
+    );
+    super::progress::emit_reused_snapshot(
+        share_id,
         log_level,
-    )
+        completed_chunks.len(),
+        total_chunks,
+        reused_bytes,
+        total_encrypted,
+    );
 }
 
 fn decrypt_library_chunks_to_file_sequential(
@@ -1320,6 +1557,7 @@ fn decrypt_library_chunks_to_file_sequential(
 ) -> Result<(), NetworkError> {
     prepare_output_file_parent(output_path)?;
 
+    let mut output_cleanup = TempFileCleanup::new(output_path.to_path_buf());
     let output = File::create(output_path)?;
     let mut output = BufWriter::with_capacity(RECONSTRUCT_WRITER_BUFFER_SIZE, output);
     let mut final_hasher = blake3::Hasher::new();
@@ -1343,7 +1581,9 @@ fn decrypt_library_chunks_to_file_sequential(
         );
     }
 
-    finalize_streamed_output(output, final_hasher, manifest.file_id)
+    finalize_streamed_output(output, final_hasher, manifest.file_id)?;
+    output_cleanup.disarm();
+    Ok(())
 }
 
 fn decrypt_library_chunks_to_file_parallel(
@@ -1356,11 +1596,11 @@ fn decrypt_library_chunks_to_file_parallel(
 ) -> Result<(), NetworkError> {
     prepare_output_file_parent(output_path)?;
 
+    let mut output_cleanup = TempFileCleanup::new(output_path.to_path_buf());
     let output = File::create(output_path)?;
     let mut output = BufWriter::with_capacity(RECONSTRUCT_WRITER_BUFFER_SIZE, output);
     let mut final_hasher = blake3::Hasher::new();
     let queue = Arc::new(Mutex::new(VecDeque::from(manifest.chunks.clone())));
-    let (tx, rx) = mpsc::sync_channel::<Result<DecryptedChunk, NetworkError>>(worker_count * 2);
     let paths = paths.clone();
     let file_id = manifest.file_id;
     let file_key = *file_key;
@@ -1373,6 +1613,7 @@ fn decrypt_library_chunks_to_file_parallel(
     let share_id = paths.share_id;
 
     thread::scope(|scope| {
+        let (tx, rx) = mpsc::sync_channel::<Result<DecryptedChunk, NetworkError>>(worker_count * 2);
         let mut handles = Vec::with_capacity(worker_count);
         for _ in 0..worker_count {
             let queue = Arc::clone(&queue);
@@ -1447,6 +1688,8 @@ fn decrypt_library_chunks_to_file_parallel(
             }
         }
 
+        drop(rx);
+
         for handle in handles {
             handle.join().map_err(|_| {
                 NetworkError::PeerError("parallel decrypt worker panicked".to_string())
@@ -1464,7 +1707,10 @@ fn decrypt_library_chunks_to_file_parallel(
         }
 
         finalize_streamed_output(output, final_hasher, manifest.file_id)
-    })
+    })?;
+
+    output_cleanup.disarm();
+    Ok(())
 }
 
 fn decrypt_library_chunk(
@@ -1542,12 +1788,13 @@ fn download_chunk_temp_path(
     state: &Option<ActiveDownloadLibraryState>,
     index: u32,
 ) -> Result<PathBuf, NetworkError> {
+    static PART_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let state = active_download_state(state)?;
     let suffix = super::seed::staging_timestamp();
+    let seq = PART_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(state.paths.chunks_dir().join(format!(
-        "{index:06}.{}.{}.part",
+        "{index:06}.{}.{suffix}.{seq}.part",
         crate::state::model::CHUNK_EXTENSION,
-        suffix
     )))
 }
 
@@ -1564,9 +1811,6 @@ fn persist_downloaded_chunk_file(
 
     fs::create_dir_all(state.paths.chunks_dir())?;
     let final_path = state.paths.chunk_path(index);
-    if final_path.exists() {
-        fs::remove_file(&final_path)?;
-    }
     fs::rename(temp_path, final_path)?;
 
     state.progress.mark_completed(index);
@@ -1671,4 +1915,157 @@ pub(super) fn is_peer_closed_protocol_error(error: &ProtocolError) -> bool {
                 ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
             )
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::*;
+    use crate::network::tcp::bind_listener;
+
+    struct TestTempDir(PathBuf);
+
+    impl TestTempDir {
+        fn new(prefix: &str) -> Self {
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "etle-download-test-{prefix}-{}-{seq}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create test temp dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestTempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn from_peer_with_rejects_mismatched_requested_share_id() {
+        let dir = TestTempDir::new("share-mismatch");
+        let source_path = dir.path().join("source.bin");
+        let output_path = dir.path().join("output.bin");
+        fs::write(&source_path, b"payload for share mismatch check").expect("write source");
+
+        let listener = bind_listener("127.0.0.1:0").await.expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let server_source = source_path.clone();
+        let server = tokio::spawn(async move {
+            super::super::serve::file_once(listener, &server_source, 16, "seeder-mismatch").await
+        });
+
+        let options = DownloadFileOptions::new("peer-mismatch", TransferLogLevel::Quiet)
+            .with_requested_share_id(Some(ShareId([0xee; 32])));
+        let result = from_peer_with(addr, &output_path, options).await;
+
+        assert!(
+            matches!(
+                result,
+                Err(NetworkError::File(FileError::ShareIdMismatch { .. }))
+            ),
+            "expected ShareIdMismatch, got {result:?}"
+        );
+        assert!(!output_path.exists());
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn from_peers_fails_over_with_no_resume_past_dead_peer() {
+        let dir = TestTempDir::new("failover-no-resume");
+        let source_path = dir.path().join("source.bin");
+        let output_path = dir.path().join("output.bin");
+        let peer_lib = dir.path().join("peer-lib");
+        let payload = vec![0x5a_u8; 4096];
+        fs::write(&source_path, &payload).expect("write source");
+
+        let dead_listener = bind_listener("127.0.0.1:0").await.expect("bind dead port");
+        let dead_addr = dead_listener.local_addr().expect("dead addr");
+        drop(dead_listener);
+
+        let live_listener = bind_listener("127.0.0.1:0").await.expect("bind live port");
+        let live_addr = live_listener.local_addr().expect("live addr");
+        let server_source = source_path.clone();
+        let server = tokio::spawn(async move {
+            super::super::serve::file_once(live_listener, &server_source, 1024, "seeder-live").await
+        });
+
+        let options = DownloadFileOptions::new("peer-failover", TransferLogLevel::Quiet)
+            .with_library_root(&peer_lib)
+            .with_resume(false);
+        let manifest = from_peers([dead_addr, live_addr], &output_path, options)
+            .await
+            .expect("failover download succeeds");
+
+        assert_eq!(manifest.file_size, payload.len() as u64);
+        assert_eq!(fs::read(&output_path).expect("read output"), payload);
+        server.await.expect("server join").expect("server ok");
+    }
+
+    #[tokio::test]
+    async fn from_peers_parallel_probes_past_dead_peer_to_reach_worker_limit() {
+        let dir = TestTempDir::new("parallel-dead-probe");
+        let source_path = dir.path().join("source.bin");
+        let output_path = dir.path().join("output.bin");
+        let seeder_lib = dir.path().join("seeder-lib");
+        let peer_lib = dir.path().join("peer-lib");
+        let payload = (0..4096_usize).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        fs::write(&source_path, &payload).expect("write source");
+
+        let descriptor =
+            super::super::seed::add(&source_path, 512, &seeder_lib, TransferLogLevel::Quiet)
+                .expect("seed into library");
+
+        let dead_listener = bind_listener("127.0.0.1:0").await.expect("bind dead port");
+        let dead_addr = dead_listener.local_addr().expect("dead addr");
+        drop(dead_listener);
+
+        let listener1 = bind_listener("127.0.0.1:0").await.expect("bind seeder1");
+        let addr1 = listener1.local_addr().expect("addr1");
+        let listener2 = bind_listener("127.0.0.1:0").await.expect("bind seeder2");
+        let addr2 = listener2.local_addr().expect("addr2");
+
+        let lib1 = seeder_lib.clone();
+        let seeder1 = tokio::spawn(async move {
+            super::super::serve::library_once_from_listener(
+                &listener1,
+                &lib1,
+                ServeFileOptions::new("seeder-1", TransferLogLevel::Quiet),
+            )
+            .await
+        });
+        let lib2 = seeder_lib.clone();
+        let seeder2 = tokio::spawn(async move {
+            super::super::serve::library_once_from_listener(
+                &listener2,
+                &lib2,
+                ServeFileOptions::new("seeder-2", TransferLogLevel::Quiet),
+            )
+            .await
+        });
+
+        let options = DownloadFileOptions::new("peer-parallel", TransferLogLevel::Quiet)
+            .with_library_root(&peer_lib)
+            .with_requested_share_id(Some(descriptor.share_id));
+        let manifest = tokio::time::timeout(
+            Duration::from_secs(5),
+            from_peers_parallel([dead_addr, addr1, addr2], &output_path, options, 2),
+        )
+        .await
+        .expect("parallel download test timed out")
+        .expect("parallel download succeeds past dead peer");
+
+        assert_eq!(manifest.file_size, payload.len() as u64);
+        assert_eq!(fs::read(&output_path).expect("read output"), payload);
+        seeder1.await.expect("seeder1 join").expect("seeder1 ok");
+        seeder2.await.expect("seeder2 join").expect("seeder2 ok");
+    }
 }

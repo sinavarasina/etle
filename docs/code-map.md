@@ -208,9 +208,11 @@ Progress event/log helpers.
 
 IPC command, response, and event types, including:
 
+- `GetStatus` / `Status(IpcDaemonStatus)` with active `Seed`/`Download`/`Upload` jobs
 - `DeleteShare`
 - `ShareDeleted`
-- transfer queued/completed events
+- `SeedQueued` / `TransferQueued`
+- `JobStarted` / `JobCompleted` / `JobFailed` and `TaskProgress`
 - server started/stopped events
 
 ### `src/ipc/server/`
@@ -219,7 +221,7 @@ Daemon IPC listener, command dispatch, cleanup, and event fanout.
 
 ### `src/ipc/client.rs`
 
-CLI/GUI IPC client helpers.
+CLI/GUI IPC client helpers, including shared `EventSubscription`.
 
 ### `src/ipc/path.rs`
 
@@ -230,17 +232,53 @@ Default IPC endpoint selection:
 
 ## GUI
 
+### `src/gui/mod.rs`
+
+Entry point (`run_gui`), CSS provider installation, and GTK/Relm4 launcher.
+
 ### `src/gui/app.rs`
 
-Relm4 application state/update logic.
+Root declarative `#[relm4::component(pub)]` shell (`EtleGui`), header/banner/active-transfer strip, `gtk::Stack` tab container, forwarded page controllers, and async `Component::update_cmd` IPC dispatch.
 
-### `src/gui/widgets.rs`
+### `src/gui/model.rs`
 
-GTK widget construction and list refill helpers.
+Pure Rust GUI domain/message types (`GuiInit`, `UiBanner`, `GuiTransfer`, `TransferView`, `ShareRowData`, `SeedFileEntry`, `DownloadFormRequest`, `DaemonSettingsSnapshot`, `IpcRequestKind`, `AppCmd`).
+
+### `src/gui/state.rs`
+
+Headless pure-Rust state and daemon synchronization logic (`GuiState`), active-job/transfer reconciliation, share selection persistence, seed queue state, and download request validation with unit tests.
+
+### `src/gui/ipc.rs`
+
+Async IPC helpers driven by Relm4 `oneshot_command` and `command` (`run_command_with_timeout`, `fetch_daemon_snapshot`, `stream_daemon_events`).
+
+### `src/gui/components/mod.rs`
+
+Incremental factory diff helper (`DiffRow`, `sync_factory_rows`) and `ListBox` selection restoration helper (`restore_listbox_selection`).
+
+### `src/gui/components/rows.rs`
+
+Declarative `#[relm4::factory(pub)]` row components (`ShareRow`, `SeedFileRow`, `TransferRow`) rendered via `FactoryVecDeque`.
+
+### `src/gui/pages/`
+
+Modular declarative `#[relm4::component(pub)]` page components (`library.rs`, `seed.rs`, `download.rs`, `activity.rs`, `settings.rs`) using `view!`, `#[watch]`, `#[block_signal]`, `EntryBuffer`, `Adjustment`, `TextBuffer`, and `post_view`.
+
+### `src/gui/progress.rs`
+
+Transfer phase parsing and progress bar formatting helpers.
+
+### `src/gui/format.rs`
+
+Human-readable byte, speed, filename, time, and log formatting helpers.
 
 ### `src/gui/style.rs`
 
 Platform style/environment installer.
+
+### `src/gui/style/common.css`
+
+Theme-adaptive GTK CSS loaded on all platforms.
 
 ### `src/gui/style/windows.css`
 

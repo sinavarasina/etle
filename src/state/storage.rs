@@ -1,11 +1,14 @@
 use std::{
     fs::OpenOptions,
-    io::Write,
+    io::{ErrorKind, Read, Write},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+
+static TMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 use super::prelude::*;
 use super::{
@@ -86,7 +89,19 @@ pub fn read_chunk(
     index: u32,
     expected_size: u64,
 ) -> Result<EncryptedChunk, FileError> {
-    let data = fs::read(paths.chunk_path(index))?;
+    let mut file = fs::File::open(paths.chunk_path(index))?;
+    let meta_size = file.metadata()?.len();
+    if meta_size != expected_size {
+        return Err(FileError::ChunkSizeMismatch {
+            index,
+            expected: expected_size,
+            actual: meta_size,
+        });
+    }
+
+    let capacity = usize::try_from(expected_size).unwrap_or(0);
+    let mut data = Vec::with_capacity(capacity);
+    file.read_to_end(&mut data)?;
     let actual = data.len() as u64;
 
     if actual != expected_size {
@@ -110,16 +125,10 @@ fn write_file_atomic(path: &Path, bytes: &[u8], secret: bool) -> Result<(), std:
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
 
-    let tmp_path = parent.join(format!(
-        ".{}.{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("etle-write"),
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos())
-    ));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("etle-write");
 
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -131,16 +140,45 @@ fn write_file_atomic(path: &Path, bytes: &[u8], secret: bool) -> Result<(), std:
         }
     }
 
-    let mut file = options.open(&tmp_path)?;
+    let mut last_exists_error = None;
+    let mut opened = None;
+    for _ in 0..64 {
+        let seq = TMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let candidate = parent.join(format!(
+            ".{file_name}.{}.{nanos}.{seq}.tmp",
+            std::process::id()
+        ));
+
+        match options.open(&candidate) {
+            Ok(file) => {
+                opened = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                last_exists_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    let (tmp_path, mut file) = match opened {
+        Some(pair) => pair,
+        None => {
+            return Err(last_exists_error.unwrap_or_else(|| {
+                std::io::Error::new(ErrorKind::AlreadyExists, "failed to allocate temp file")
+            }));
+        }
+    };
+
     if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
         let _ = fs::remove_file(&tmp_path);
         return Err(error);
     }
-
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
+    drop(file);
 
     if let Err(error) = fs::rename(&tmp_path, path) {
         let _ = fs::remove_file(&tmp_path);

@@ -11,7 +11,7 @@ use crate::{
     },
     network::error::NetworkError,
     protocol::{
-        codec::{receive, send},
+        codec::{receive_control, send},
         message::WireMessage,
     },
 };
@@ -27,7 +27,7 @@ where
 
     send(stream, &WireMessage::KeyExchange { public_key }).await?;
 
-    let server_public_key = match receive(stream).await? {
+    let server_public_key = match receive_control(stream).await? {
         WireMessage::KeyExchange { public_key } => public_key,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -46,7 +46,7 @@ pub async fn server_shared_secret_exchange<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let client_public_key = match receive(stream).await? {
+    let client_public_key = match receive_control(stream).await? {
         WireMessage::KeyExchange { public_key } => public_key,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -161,7 +161,7 @@ where
     )
     .await?;
 
-    let server_public_key = match receive(stream).await? {
+    let server_public_key = match receive_control(stream).await? {
         WireMessage::KeyExchange { public_key } => public_key,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -184,7 +184,7 @@ async fn server_unauthenticated_session_key_exchange<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let client_public_key = match receive(stream).await? {
+    let client_public_key = match receive_control(stream).await? {
         WireMessage::KeyExchange { public_key } => public_key,
         actual => {
             return Err(NetworkError::UnexpectedMessage {
@@ -216,7 +216,7 @@ async fn receive_auth_proof<S>(stream: &mut S) -> Result<AuthTag, NetworkError>
 where
     S: AsyncRead + Unpin,
 {
-    match receive(stream).await? {
+    match receive_control(stream).await? {
         WireMessage::AuthProof { tag } => Ok(tag),
         actual => Err(NetworkError::UnexpectedMessage {
             expected: "AuthProof",

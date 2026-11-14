@@ -1,15 +1,92 @@
 use super::prelude::*;
 
+#[derive(Clone, Debug)]
+pub struct DaemonRuntimeInfo {
+    pub peer_id: String,
+    pub listen: Option<SocketAddr>,
+    pub discovery_port: u16,
+    pub auto_discovery: bool,
+    pub auth_required: bool,
+    pub log_level: TransferLogLevel,
+}
+
+static RUNTIME_INFO: OnceLock<Mutex<Option<DaemonRuntimeInfo>>> = OnceLock::new();
+static NEXT_JOB_SEQ: AtomicU64 = AtomicU64::new(1);
+
+struct JobAbortGuard {
+    job_id: String,
+    share_id: Option<ShareId>,
+    active: bool,
+}
+
+impl JobAbortGuard {
+    fn new(job_id: String, share_id: Option<ShareId>) -> Self {
+        Self {
+            job_id,
+            share_id,
+            active: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for JobAbortGuard {
+    fn drop(&mut self) {
+        if self.active {
+            jobs::fail_job(
+                &self.job_id,
+                "daemon background job terminated unexpectedly",
+            );
+            if let Some(share_id) = self.share_id {
+                jobs::unregister(share_id, &self.job_id);
+            }
+        }
+    }
+}
+
+/// Records live daemon runtime metadata so `IpcCommand::GetStatus` can report it.
+pub fn set_runtime_info(info: DaemonRuntimeInfo) {
+    let lock = RUNTIME_INFO.get_or_init(|| Mutex::new(None));
+    *lock.lock().expect("daemon runtime info mutex poisoned") = Some(info);
+}
+
+fn current_runtime_info() -> DaemonRuntimeInfo {
+    RUNTIME_INFO
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .expect("daemon runtime info mutex poisoned")
+        .clone()
+        .unwrap_or_else(|| DaemonRuntimeInfo {
+            peer_id: "etle-daemon".to_string(),
+            listen: None,
+            discovery_port: DEFAULT_DISCOVERY_PORT,
+            auto_discovery: true,
+            auth_required: false,
+            log_level: TransferLogLevel::Normal,
+        })
+}
+
 pub fn handle(command: IpcCommand, library_root: &Path) -> IpcResponse {
     match command {
         IpcCommand::Ping => IpcResponse::Pong,
+        IpcCommand::GetStatus => get_status_response(library_root),
         IpcCommand::ListShares => list_shares_response(library_root),
         IpcCommand::DeleteShare { share_id } => delete_share_response(library_root, share_id),
         IpcCommand::Shutdown => IpcResponse::Ack {
             message: "daemon shutdown requested".to_string(),
         },
-        IpcCommand::StartServing { .. } => IpcResponse::Ack {
-            message: "P2P serving is already managed by etled serve".to_string(),
+        IpcCommand::StartServing { listen } => match current_runtime_info().listen {
+            Some(actual) if listen.port() != 0 && listen != actual => IpcResponse::Error {
+                message: format!(
+                    "P2P server is already bound to {actual}; restart daemon to listen on {listen}"
+                ),
+            },
+            _ => IpcResponse::Ack {
+                message: "P2P serving is already managed by etled serve".to_string(),
+            },
         },
         IpcCommand::StopServing => IpcResponse::Error {
             message: "stopping only the P2P server is not implemented yet; use Shutdown"
@@ -86,12 +163,57 @@ pub async fn handle_async(command: IpcCommand, library_root: &Path) -> IpcRespon
 }
 
 fn queue_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Path) -> IpcResponse {
-    let input_label = input.display().to_string();
+    if chunk_size == 0 {
+        return IpcResponse::Error {
+            message: "chunk_size must be greater than 0".to_string(),
+        };
+    }
+
+    if !input.is_file() {
+        return IpcResponse::Error {
+            message: format!(
+                "seed input file does not exist or is not a regular file: {}",
+                input.display()
+            ),
+        };
+    }
+
+    let label = input
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| input.display().to_string());
+    let total_bytes = fs::metadata(&input).map(|meta| meta.len()).unwrap_or(0);
+    let estimated_chunks = if total_bytes == 0 {
+        0
+    } else {
+        usize::try_from(total_bytes.div_ceil(chunk_size as u64)).unwrap_or(usize::MAX)
+    };
+    let job_id = generate_job_id("seed", "local");
+    let task_job_id = job_id.clone();
     let library_root = library_root.to_path_buf();
 
+    jobs::start_job(IpcActiveJob {
+        job_id: job_id.clone(),
+        kind: IpcJobKind::Seed,
+        share_id: None,
+        label: label.clone(),
+        phase: "daemon:hashing input file".to_string(),
+        completed_chunks: 0,
+        total_chunks: estimated_chunks,
+        bytes_done: 0,
+        total_bytes,
+        bytes_per_second: 0,
+    });
+
     tokio::task::spawn_blocking(move || {
-        match run_seed_file_command(input, chunk_size, &library_root) {
+        let mut abort_guard = JobAbortGuard::new(task_job_id.clone(), None);
+        match run_seed_file_command(input, chunk_size, &library_root, &task_job_id) {
             IpcResponse::ShareAdded { share } => {
+                jobs::complete_job(
+                    &task_job_id,
+                    format!("seeded \"{}\" ({} chunks)", share.name, share.total_chunks),
+                );
                 super::events::publish(IpcEvent::ShareUpdated {
                     share: share.clone(),
                 });
@@ -106,28 +228,39 @@ fn queue_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Pat
                 );
             }
             IpcResponse::Error { message } => {
-                super::events::publish(IpcEvent::Error {
-                    message: message.clone(),
-                });
+                jobs::fail_job(&task_job_id, message.clone());
                 eprintln!("[daemon] seed job failed: {message}");
             }
-            other => println!("[daemon] seed job finished: {other:?}"),
+            other => {
+                jobs::complete_job(&task_job_id, format!("{other:?}"));
+                println!("[daemon] seed job finished: {other:?}");
+            }
         }
+        abort_guard.disarm();
     });
 
-    IpcResponse::Ack {
-        message: format!("seed job queued: {input_label}"),
-    }
+    IpcResponse::SeedQueued { job_id, label }
 }
 
-fn run_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Path) -> IpcResponse {
-    let chunk_size = if chunk_size == 0 {
-        DEFAULT_CHUNK_SIZE
-    } else {
-        chunk_size
-    };
+fn run_seed_file_command(
+    input: PathBuf,
+    chunk_size: usize,
+    library_root: &Path,
+    job_id: &str,
+) -> IpcResponse {
+    if chunk_size == 0 {
+        return IpcResponse::Error {
+            message: "chunk_size must be greater than 0".to_string(),
+        };
+    }
 
-    match seed::add(&input, chunk_size, library_root, TransferLogLevel::Normal) {
+    match seed::add_with_job(
+        &input,
+        chunk_size,
+        library_root,
+        current_runtime_info().log_level,
+        Some(job_id),
+    ) {
         Ok(descriptor) => match share_summary_by_id(library_root, descriptor.share_id) {
             Ok(Some(share)) => IpcResponse::ShareAdded { share },
             Ok(None) => IpcResponse::Error {
@@ -144,11 +277,12 @@ fn run_seed_file_command(input: PathBuf, chunk_size: usize, library_root: &Path)
     }
 }
 
-fn generate_job_id(prefix: &str, share_id: ShareId) -> String {
+fn generate_job_id(prefix: &str, suffix: &str) -> String {
+    let seq = NEXT_JOB_SEQ.fetch_add(1, Ordering::Relaxed);
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
-    format!("{prefix}-{share_id}-{millis}-{}", std::process::id())
+    format!("{prefix}-{suffix}-{millis}-{seq}-{}", std::process::id())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -166,12 +300,37 @@ fn queue_download_command(
     library_root: &Path,
 ) -> IpcResponse {
     let library_root = library_root.to_path_buf();
-    let job_id = generate_job_id("download", share_id);
-    jobs::register(share_id, job_id.clone());
+    let job_id = generate_job_id("download", &share_id.to_string());
+    let known_share = share_summary_by_id(&library_root, share_id).ok().flatten();
+    if !jobs::try_start_job(IpcActiveJob {
+        job_id: job_id.clone(),
+        kind: IpcJobKind::Download,
+        share_id: Some(share_id),
+        label: known_share
+            .as_ref()
+            .map(|share| share.name.clone())
+            .unwrap_or_else(|| share_id.to_string()),
+        phase: if peers.is_empty() {
+            "peer:discovering peers".to_string()
+        } else {
+            "peer:connecting".to_string()
+        },
+        completed_chunks: known_share.as_ref().map_or(0, |s| s.completed_chunks),
+        total_chunks: known_share.as_ref().map_or(0, |s| s.total_chunks),
+        bytes_done: 0,
+        total_bytes: known_share.as_ref().map_or(0, |s| s.total_bytes),
+        bytes_per_second: 0,
+    }) {
+        return IpcResponse::Error {
+            message: format!("download for share {share_id} is already running"),
+        };
+    }
     let task_job_id = job_id.clone();
 
     tokio::spawn(async move {
+        let mut abort_guard = JobAbortGuard::new(task_job_id.clone(), Some(share_id));
         match handle_download_command(
+            &task_job_id,
             share_id,
             peers,
             output,
@@ -193,6 +352,13 @@ fn queue_download_command(
                 chunks,
                 ..
             } => {
+                jobs::complete_job(
+                    &task_job_id,
+                    format!(
+                        "downloaded \"{file_name}\" ({chunks} chunks) to {}",
+                        output.display()
+                    ),
+                );
                 super::events::publish(IpcEvent::TaskProgress {
                     job_id: Some(task_job_id.clone()),
                     task: "peer:completed".to_string(),
@@ -218,14 +384,16 @@ fn queue_download_command(
                 println!("[daemon] chunks: {chunks}");
             }
             IpcResponse::Error { message } => {
-                super::events::publish(IpcEvent::Error {
-                    message: message.clone(),
-                });
+                jobs::fail_job(&task_job_id, message.clone());
                 eprintln!("[daemon] download job failed: {message}");
             }
-            other => println!("[daemon] download job finished: {other:?}"),
+            other => {
+                jobs::complete_job(&task_job_id, format!("{other:?}"));
+                println!("[daemon] download job finished: {other:?}");
+            }
         }
 
+        abort_guard.disarm();
         jobs::unregister(share_id, &task_job_id);
     });
 
@@ -234,6 +402,7 @@ fn queue_download_command(
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_download_command(
+    job_id: &str,
     share_id: ShareId,
     peers: Vec<SocketAddr>,
     output: Option<PathBuf>,
@@ -247,7 +416,8 @@ async fn handle_download_command(
     library_root: &Path,
 ) -> IpcResponse {
     let auto_output = output.is_none();
-    let output_path = output.unwrap_or_else(|| temporary_download_output_path(library_root));
+    let output_path =
+        output.unwrap_or_else(|| temporary_download_output_path(library_root, job_id));
 
     if let Err(error) = create_output_parent_dir(&output_path) {
         return IpcResponse::Error {
@@ -293,12 +463,13 @@ async fn handle_download_command(
         );
     }
 
-    let mut options = DownloadFileOptions::new("etle-daemon", TransferLogLevel::Normal)
+    let runtime = current_runtime_info();
+    let mut options = DownloadFileOptions::new(runtime.peer_id, runtime.log_level)
         .with_library_root(library_root.to_path_buf())
         .with_resume(resume)
         .with_requested_share_id(Some(share_id))
         .with_request_window(request_window);
-    if let Some(auth_psk) = auth_psk {
+    if let Some(auth_psk) = auth_psk.filter(|psk| !psk.trim().is_empty()) {
         options = options.with_auth_psk(crate::crypto::key_exchange::AuthPsk::from_passphrase(
             auth_psk,
         ));
@@ -313,6 +484,9 @@ async fn handle_download_command(
     let manifest = match result {
         Ok(manifest) => manifest,
         Err(error) => {
+            if auto_output {
+                let _ = fs::remove_file(&output_path);
+            }
             return IpcResponse::Error {
                 message: error.to_string(),
             };
@@ -323,6 +497,7 @@ async fn handle_download_command(
         match move_auto_download_output(&output_path, library_root, &manifest.file_name) {
             Ok(path) => path,
             Err(error) => {
+                let _ = fs::remove_file(&output_path);
                 return IpcResponse::Error {
                     message: error.to_string(),
                 };
@@ -344,6 +519,21 @@ fn effective_download_parallelism(requested_parallelism: usize, peer_count: usiz
     }
 }
 
+fn get_status_response(library_root: &Path) -> IpcResponse {
+    let info = current_runtime_info();
+    let share_count = library::list(library_root).map(|s| s.len()).unwrap_or(0);
+    IpcResponse::Status(IpcDaemonStatus {
+        peer_id: info.peer_id,
+        listen: info.listen,
+        library_root: library_root.to_path_buf(),
+        discovery_port: info.discovery_port,
+        auto_discovery: info.auto_discovery,
+        auth_required: info.auth_required,
+        share_count,
+        active_jobs: jobs::active_job_list(),
+    })
+}
+
 fn list_shares_response(library_root: &Path) -> IpcResponse {
     match library::list(library_root) {
         Ok(shares) => IpcResponse::Shares {
@@ -360,6 +550,15 @@ fn list_shares_response(library_root: &Path) -> IpcResponse {
 
 fn delete_share_response(library_root: &Path, share_id: ShareId) -> IpcResponse {
     println!("[daemon] ipc delete requested: share_id={share_id}");
+
+    if jobs::has_active_job(IpcJobKind::Download, share_id)
+        || jobs::has_active_job(IpcJobKind::Seed, share_id)
+        || jobs::has_active_job(IpcJobKind::Upload, share_id)
+    {
+        return IpcResponse::Error {
+            message: format!("cannot delete share {share_id} while a transfer job is active"),
+        };
+    }
 
     let share = match share_summary_by_id(library_root, share_id) {
         Ok(Some(share)) => share,
@@ -428,16 +627,75 @@ fn transfer_completed_response(
 }
 
 #[cfg(unix)]
-pub(super) fn bind_ipc_listener(socket_path: &Path) -> Result<UnixListener, IpcError> {
-    if let Some(parent) = socket_path.parent() {
+pub(super) struct BoundUnixIpc {
+    pub(super) listener: UnixListener,
+    pub(super) lock_file: fs::File,
+}
+
+#[cfg(unix)]
+pub(super) fn bind_ipc_listener(socket_path: &Path) -> Result<BoundUnixIpc, IpcError> {
+    use std::os::unix::{fs::FileTypeExt, net::UnixStream as StdUnixStream};
+
+    if let Some(parent) = socket_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
         fs::create_dir_all(parent)?;
     }
 
-    if socket_path.exists() {
-        fs::remove_file(socket_path)?;
+    let mut lock_os = socket_path.as_os_str().to_os_string();
+    lock_os.push(".lock");
+    let lock_path = PathBuf::from(lock_os);
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+
+    match lock_file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            return Err(IpcError::AlreadyRunning(format!(
+                "another daemon already holds lock {}",
+                lock_path.display()
+            )));
+        }
+        Err(std::fs::TryLockError::Error(error)) => return Err(IpcError::Io(error)),
     }
 
-    Ok(UnixListener::bind(socket_path)?)
+    match fs::symlink_metadata(socket_path) {
+        Ok(meta) => {
+            if !meta.file_type().is_socket() {
+                return Err(IpcError::AlreadyRunning(format!(
+                    "refusing to remove non-socket path at {}",
+                    socket_path.display()
+                )));
+            }
+
+            match StdUnixStream::connect(socket_path) {
+                Ok(_) => {
+                    return Err(IpcError::AlreadyRunning(socket_path.display().to_string()));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    fs::remove_file(socket_path)?;
+                }
+                Err(error) => return Err(IpcError::Io(error)),
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(IpcError::Io(error)),
+    }
+
+    let listener = UnixListener::bind(socket_path)?;
+    Ok(BoundUnixIpc {
+        listener,
+        lock_file,
+    })
 }
 
 fn ipc_share_summary_from_local(share: LocalShareSummary) -> IpcShareSummary {
@@ -448,6 +706,8 @@ fn ipc_share_summary_from_local(share: LocalShareSummary) -> IpcShareSummary {
     IpcShareSummary {
         share_id: share.descriptor.share_id,
         name: share.descriptor.name,
+        total_bytes: share.descriptor.total_size,
+        chunk_size: share.descriptor.chunk_size,
         completed_chunks,
         total_chunks,
         has_secret: share.has_secret,
@@ -468,9 +728,8 @@ fn default_download_output_dir(library_root: &Path) -> PathBuf {
     library_root.join(OUTPUT_DIR_NAME)
 }
 
-fn temporary_download_output_path(library_root: &Path) -> PathBuf {
-    default_download_output_dir(library_root)
-        .join(format!(".etle-download-daemon-{}.part", std::process::id()))
+fn temporary_download_output_path(library_root: &Path, job_id: &str) -> PathBuf {
+    default_download_output_dir(library_root).join(format!(".etle-download-{job_id}.part"))
 }
 
 fn move_auto_download_output(

@@ -1,0 +1,177 @@
+/* Cross-platform theme-adaptive base styling for ETLE GUI.
+ * Uses alpha(currentColor, ...) so it adapts automatically to both light and
+ * dark GTK4 themes on Linux and macOS, while Windows layers Fluent overrides.
+ */
+
+.etle-header {
+    padding: 4px 2px 6px 2px;
+}
+
+.etle-conn-pill {
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-weight: 600;
+    font-size: 9.5pt;
+    border: 1px solid alpha(currentColor, 0.18);
+    background-color: alpha(currentColor, 0.06);
+}
+
+.etle-conn-online {
+    background-color: rgba(46, 160, 67, 0.16);
+    border-color: rgba(46, 160, 67, 0.42);
+}
+
+.etle-conn-offline {
+    background-color: rgba(218, 54, 51, 0.14);
+    border-color: rgba(218, 54, 51, 0.38);
+}
+
+.etle-banner {
+    border-radius: 6px;
+    padding: 8px 12px;
+    border: 1px solid alpha(currentColor, 0.16);
+    background-color: alpha(currentColor, 0.06);
+}
+
+.etle-banner-info {
+    background-color: rgba(33, 150, 243, 0.12);
+    border-color: rgba(33, 150, 243, 0.34);
+}
+
+.etle-banner-success {
+    background-color: rgba(46, 160, 67, 0.14);
+    border-color: rgba(46, 160, 67, 0.38);
+}
+
+.etle-banner-warning {
+    background-color: rgba(210, 153, 34, 0.16);
+    border-color: rgba(210, 153, 34, 0.40);
+}
+
+.etle-banner-error {
+    background-color: rgba(218, 54, 51, 0.16);
+    border-color: rgba(218, 54, 51, 0.42);
+}
+
+.etle-strip {
+    border-radius: 6px;
+    padding: 7px 12px;
+    border: 1px solid alpha(currentColor, 0.14);
+    background-color: alpha(currentColor, 0.05);
+}
+
+.etle-badge {
+    border-radius: 999px;
+    padding: 2px 9px;
+    font-size: 8.5pt;
+    font-weight: 600;
+    border: 1px solid alpha(currentColor, 0.16);
+}
+
+.etle-badge-ok {
+    background-color: rgba(46, 160, 67, 0.15);
+    border-color: rgba(46, 160, 67, 0.36);
+}
+
+.etle-badge-accent {
+    background-color: rgba(33, 150, 243, 0.15);
+    border-color: rgba(33, 150, 243, 0.38);
+}
+
+.etle-badge-warn {
+    background-color: rgba(210, 153, 34, 0.16);
+    border-color: rgba(210, 153, 34, 0.38);
+}
+
+.etle-badge-error {
+    background-color: rgba(218, 54, 51, 0.16);
+    border-color: rgba(218, 54, 51, 0.40);
+}
+
+.etle-badge-muted {
+    background-color: alpha(currentColor, 0.07);
+    border-color: alpha(currentColor, 0.15);
+}
+
+.etle-kv-key {
+    font-weight: 600;
+    font-size: 9.5pt;
+    opacity: 0.72;
+}
+
+.etle-monospace {
+    font-family: monospace;
+}
+
+.etle-empty-state {
+    padding: 16px 12px;
+    opacity: 0.75;
+}
+
+.etle-confirm-bar {
+    border-radius: 6px;
+    padding: 8px 12px;
+    border: 1px solid rgba(218, 54, 51, 0.38);
+    background-color: rgba(218, 54, 51, 0.10);
+}
+
+.etle-row-card {
+    padding: 4px 2px;
+}
+
+.etle-section-header {
+    margin-bottom: 4px;
+}
+
+.etle-hint {
+    font-size: 9pt;
+    opacity: 0.75;
+}
+
+.etle-hint-ok {
+    font-size: 9pt;
+    color: #2da44e;
+    font-weight: 500;
+}
+
+.etle-hint-warn {
+    font-size: 9pt;
+    color: #bf8700;
+    font-weight: 500;
+}
+
+.etle-kind-pill {
+    border-radius: 6px;
+    padding: 2px 7px;
+    font-size: 8pt;
+    font-weight: 600;
+    border: 1px solid alpha(currentColor, 0.16);
+    background-color: alpha(currentColor, 0.06);
+}
+
+.etle-kind-seed {
+    background-color: rgba(130, 80, 223, 0.14);
+    border-color: rgba(130, 80, 223, 0.36);
+}
+
+.etle-kind-download {
+    background-color: rgba(33, 150, 243, 0.14);
+    border-color: rgba(33, 150, 243, 0.36);
+}
+
+.etle-kind-upload {
+    background-color: rgba(46, 160, 67, 0.14);
+    border-color: rgba(46, 160, 67, 0.36);
+}
+
+.etle-row {
+    padding: 4px 2px;
+}
+
+.etle-row-title {
+    font-weight: 600;
+}
+
+.etle-row-subtitle {
+    font-size: 9pt;
+}
